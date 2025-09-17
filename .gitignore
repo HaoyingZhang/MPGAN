@@ -1,0 +1,5 @@
+gans_venv/
+src/results/
+test/
+*.json
+*.png
