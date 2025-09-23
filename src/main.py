@@ -212,10 +212,12 @@ if __name__ == "__main__":
         objective_func = objective_function_pytorch
     else:
         objective_func = objective_function_exponential_pytorch
-
+    
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Device : {device}")
     G, _, d_loss_list, g_loss_list = train_gan(train_loader, 
                                                 G, D_net, 
-                                                device='cpu', 
+                                                device=device, 
                                                 checkpoint_path=model_save_path, 
                                                 epoch=train_epoch, 
                                                 mp_window_size=args.m, 
