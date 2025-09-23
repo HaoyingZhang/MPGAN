@@ -184,8 +184,7 @@ def train_gan(
 
             mp_input_batch = mp_input_batch.to(device)
             if latent :
-                latent_dim = getattr(G, 'latent_dim', None)
-                z = torch.randn(mp_input_batch.size(0), latent_dim).to(device) if latent_dim else None
+                z = torch.randn(mp_input_batch.size(0), 64, device=device) if G.z_dim else None
                 with torch.no_grad():
                     fake = G(mp_input_batch, z=z)
             else:
@@ -222,7 +221,7 @@ def train_gan(
             optimizer_G.zero_grad()
 
             if latent:
-                z = torch.randn(mp_input_batch.size(0), latent_dim, device=device) if latent_dim else None
+                z = torch.randn(mp_input_batch.size(0), 64, device=device) if G.z_dim else None
                 fake_for_g = G(mp_input_batch, z=z)     # fresh graph
             else:
                 fake_for_g = G(mp_input_batch)

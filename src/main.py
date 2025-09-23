@@ -17,6 +17,7 @@ from models.BiLSTM_latent import Generator as G_biLSTM
 # from models.BiLSTM import Pulse2pulseDiscriminator
 from models.CNN import Discriminator as D
 from models.CNN import Generator as G_CNN
+from models.WillBeNamed import Generator as G_WillBeNamed
 from training.train_baseline import train_gan, train_wgan_gp
 from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive
 from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch
@@ -202,6 +203,18 @@ if __name__ == "__main__":
         G = G_biLSTM(input_dim=mp_dim, hidden_dim=hidden_dim, output_length=n, latent_dim=latent_dim)
     elif args.g_model == "cnn":
         G = G_CNN(n=n, m=m)
+    elif args.g_model == "willbenamed":
+        G = G_WillBeNamed(
+                n=n,
+                m=m,
+                mp_channels=2,
+                base_channels=64,
+                num_blocks=6,
+                dilations=(1,2,4,8,16,32),
+                use_attention=True,
+                z_dim=64,          # or None to disable latent z
+                y_dim=None         # or e.g. 10 if you have labels/classes
+            )
 
     if args.d_model == "lstm":
         D_net = D(input_dim=1, hidden_dim=hidden_dim)
@@ -228,7 +241,8 @@ if __name__ == "__main__":
                                                 objective_func=objective_func, 
                                                 time_limit=args.time,
                                                 d_model = args.d_model,
-                                                pi_mp=args.pi_mp)
+                                                pi_mp=args.pi_mp,
+                                                latent=args.enable_latent)
 
     # G, _, d_loss_list, g_loss_list = train_wgan_gp(train_loader, 
     #                                             G, D_net, 
@@ -252,8 +266,7 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         if args.enable_latent:
-            latent_dim = getattr(G, 'latent_dim', None)
-            z = torch.randn(test_tensor.size(0), latent_dim) if latent_dim else None
+            z = torch.randn(test_tensor.size(0), 64, device=device) if G.z_dim else None
             fake_data = G(test_tensor, z=z)
         else:
             fake_data = G(test_tensor)
