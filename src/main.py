@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import sys, os, argparse, glob, json
+os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
 from scipy import stats
 
@@ -99,6 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("-d_model", type=str, default = "lstm", help="Choose the D model")
     parser.add_argument("-obj_func", type=str, default = "default", help="Define the objective function used in the training")
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
+    parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
     parser.add_argument("-time", type=int, default = None, help="Time limit" )
     args = parser.parse_args()
@@ -225,7 +227,8 @@ if __name__ == "__main__":
                                                 alpha=args.alpha, 
                                                 objective_func=objective_func, 
                                                 time_limit=args.time,
-                                                d_model = args.d_model)
+                                                d_model = args.d_model,
+                                                pi_mp=args.pi_mp)
 
     # G, _, d_loss_list, g_loss_list = train_wgan_gp(train_loader, 
     #                                             G, D_net, 
@@ -239,7 +242,7 @@ if __name__ == "__main__":
     #                                             time_limit=args.time)
 
     G.load_state_dict(torch.load(model_save_path+"best_model.pth"))
-
+    G = G.cpu()
     # 4. Generate samples
     G.eval()
     # test_dataset = TensorDataset(test_tensor, test_labels)
@@ -251,9 +254,9 @@ if __name__ == "__main__":
         if args.enable_latent:
             latent_dim = getattr(G, 'latent_dim', None)
             z = torch.randn(test_tensor.size(0), latent_dim) if latent_dim else None
-            fake_data = G(test_tensor, z=z).cpu()
+            fake_data = G(test_tensor, z=z)
         else:
-            fake_data = G(test_tensor).cpu()
+            fake_data = G(test_tensor)
     test_file_names = [files[i] for i in test_set.indices]
     # Plot results
     if args.plot:

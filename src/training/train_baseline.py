@@ -2,8 +2,10 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import os
+os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
-import os, sys, time
+import sys, time
 import torch.autograd as autograd
 
 # LOCAL IMPORTS
@@ -149,7 +151,8 @@ def train_gan(
     objective_func=objective_function_pytorch,
     time_limit=30,
     d_model="lstm",
-    latent = False
+    latent = False,
+    pi_mp=0.05
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
@@ -157,8 +160,8 @@ def train_gan(
     G      = G.to(device)
     D_net  = D_net.to(device)
 
-    optimizer_G = torch.optim.Adam(G.parameters(),     lr=1e-3)
-    optimizer_D = torch.optim.Adam(D_net.parameters(), lr=1e-4)
+    optimizer_G = torch.optim.Adam(G.parameters(),     lr=2e-4)
+    optimizer_D = torch.optim.Adam(D_net.parameters(), lr=2e-4)
     criterion   = nn.BCELoss()
 
     best_g_loss = float('inf')
@@ -179,7 +182,7 @@ def train_gan(
             if mp_input_batch.size(0) == 0:
                 continue
 
-            mp_input_batch.to(device)
+            mp_input_batch = mp_input_batch.to(device)
             if latent :
                 latent_dim = getattr(G, 'latent_dim', None)
                 z = torch.randn(mp_input_batch.size(0), latent_dim).to(device) if latent_dim else None
@@ -233,11 +236,11 @@ def train_gan(
                 fake_series_list = list(fake_g_in.squeeze(-1))   # list of [n] tensors
 
             d_fake_for_g = D_net(fake_g_in)
-            g_adv_loss = -criterion(d_fake_for_g, torch.zeros_like(d_fake_for_g)).mean()
+            g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g)).mean()
             
             # MP loss
             fake_series_list = [fb[0] if d_model=="pulse2pulse" else fb.squeeze(-1) 
-                                for fb in fake]
+                                for fb in fake_for_g]
             mp_loss = objective_func(
                 x_list=fake_series_list,
                 mp_list=mp_input_batch,
@@ -249,7 +252,7 @@ def train_gan(
                 alpha=alpha if objective_func.__name__ == "objective_function_exponential_pytorch" else None
             )
 
-            g_loss = (g_adv_loss + 0.5 * mp_loss)*0.01
+            g_loss = (g_adv_loss + pi_mp * mp_loss)
 
             optimizer_G.zero_grad()
             g_loss.backward()
@@ -260,7 +263,8 @@ def train_gan(
         if epoch_d and epoch_g:
             D_loss.append(np.mean(epoch_d))
             G_loss.append(np.mean(epoch_g))
-            print(f"Epoch {ep+1}: D_loss={D_loss[-1]:.4f}, G_loss={G_loss[-1]:.4f}")
+            print(f"Epoch {ep+1}: adv={g_adv_loss.item():.4f}, mp={mp_loss.item():.4f}, "
+      f"G={g_loss.item():.4f}, D={d_loss.item():.4f}")
 
             # checkpoint best G
             if G_loss[-1] < best_g_loss:
