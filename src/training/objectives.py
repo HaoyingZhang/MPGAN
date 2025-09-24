@@ -91,8 +91,8 @@ def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, 
         total_loss: scalar PyTorch tensor
     """
     total_loss = 0.0
-    mp = mp_list[0]
-    assert mp.shape[0] == 2*(x_list[0].shape[0]-m+1)
+    mp_0 = mp_list[0]
+    assert mp_0.shape[0] == 2*(x_list[0].shape[0]-m+1)
 
     for x, mp in zip(x_list, mp_list):
         x = x.to(device)
@@ -127,6 +127,6 @@ def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, 
         # Sum all penalties
         identity_loss = exp_penalty.sum()
 
-        total_loss += (coeff_dist * distance_loss + coeff_identity * identity_loss ) / n_mp
+        total_loss += (coeff_dist * distance_loss + coeff_identity * identity_loss )
 
     return total_loss / len(x_list)
