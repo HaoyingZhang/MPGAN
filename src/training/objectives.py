@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+import math
+import numpy as np
 
 
 def znormalized(x, eps=1e-8):
@@ -42,15 +44,16 @@ def objective_function_pytorch (x_list, mp_list, m, coeff_dist=1.0, coeff_identi
     """
     total_loss = 0.0
     violation = False
-    # mp = mp_list[0]
+    mp_0 = mp_list[0]
+    assert mp_0.shape[0] == 2*(x_list[0].shape[0]-m+1)
     if k < 1.00:
         # Take top k violations
-        violation_k = min(int(mp.shape[0] * k), mp.shape[0] - 1)
+        violation_k = min(int(mp_0.shape[0] * k), mp_0.shape[0] - 1)
         violation = True
     for x, mp in zip(x_list, mp_list):
         x = x.to(device)
         mp = mp.to(device)
-        n_mp = mp.shape[0]/2
+        n_mp = int(mp.shape[0]/2)
 
         D = compute_znormalized_distance_matrix(x, m)  # shape: (n_mp, n_mp)
 
@@ -73,11 +76,11 @@ def objective_function_pytorch (x_list, mp_list, m, coeff_dist=1.0, coeff_identi
             identity_loss = torch.sum(identity_diff)
         
 
-        total_loss += (coeff_dist * distance_loss + coeff_identity * identity_loss) / n_mp
+        total_loss += (coeff_dist * distance_loss + coeff_identity * identity_loss)
 
     return total_loss / len(x_list)
 
-def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, coeff_identity=1.0, device='cuda', alpha = 0.05, k = None):
+def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, coeff_identity=1.0, device='cuda', alpha = 0.05, k = 1.00):
     """
     Differentiable PyTorch version of matrix profile objective function with optimisation in identity violation.
     
@@ -130,3 +133,92 @@ def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, 
         total_loss += (coeff_dist * distance_loss + coeff_identity * identity_loss )
 
     return total_loss / len(x_list)
+
+
+def objective_function_unified(
+    x_list,
+    mp_list,
+    m,
+    coeff_dist: float = 1.0,
+    coeff_identity: float = 1.0,
+    device: str = "cuda",
+    identity_activation: str = "relu",  # "relu" or "exp" (for exp(x)-1)
+    alpha: float | None = 0.5,         # if set, ignores band |i-j| <= alpha*m
+    k: float = 1.0                      # if 0<k<1: keep top ceil(k*(n-1)) per row; else use all
+):
+    """
+    Differentiable PyTorch matrix-profile objective with flexible identity penalty.
+
+    - identity_activation="relu":     penalty = max(violation, 0)
+    - identity_activation="exp":      penalty = exp(max(violation,0)) - 1  (via torch.expm1)
+
+    - alpha: ignore matches within a diagonal band of width floor(alpha*m)
+    - k in (0,1): per row keep top ceil(k*(n-1)) positive violations only; otherwise sum all
+
+    Shapes:
+      x:  (T,)
+      mp: (2n,), first n are MPD, last n are MPI (ints), where n = T - m + 1
+    """
+    assert len(x_list) == len(mp_list)
+    total_loss = 0
+
+    # For k logic we need n; validate shapes using the first pair
+    mp0 = mp_list[0]
+    assert mp0.shape[0] == 2 * (x_list[0].shape[0] - m + 1), "mp shape mismatch with x and m"
+
+    # Precompute band size from alpha (if any)
+    band_size = None
+    if alpha is not None and alpha > 0:
+        band_size = int(alpha * m)
+
+    use_topk = (k is not None) and (0.0 < k < 1.0)
+
+    for x, mp in zip(x_list, mp_list):
+        x = x.to(device)
+        mp = mp.to(device)
+
+        L = (mp.shape[0] // 2)
+        D = compute_znormalized_distance_matrix(x, m)  # (n,n)
+
+        mpd = mp[:L]                 # ground-truth distances (float)
+        mpi = mp[L:].long()          # ground-truth indices (int)
+
+        # --- Distance loss: squared error on matched pairs ---
+        dist_est = D[torch.arange(L, device=device), mpi]
+        distance_loss = torch.sum((mpd - dist_est) ** 2)
+
+        # --- Identity loss: penalize any j where D[i,j] < D[i,mpi[i]] (i.e., violation > 0) ---
+        violations = dist_est.unsqueeze(1) - D  # (L,L) >0 means identity is violated
+
+        # Exclude diagonal and (optionally) a ±alpha*m band efficiently
+        if band_size is not None:
+            i = torch.arange(L, device=device).unsqueeze(1)  # (n,1)
+            j = torch.arange(L, device=device).unsqueeze(0)  # (1,n)
+            band_mask = (j - i).abs() <= band_size          # True where inside band
+        else:
+            band_mask = torch.eye(L, dtype=torch.bool, device=device)  # only diagonal
+
+        # Keep only positive violations outside the mask
+        positive = torch.clamp(violations, min=0.0)
+        positive = positive.masked_fill(band_mask, 0.0)
+
+        # Activation choice
+        if identity_activation.lower() == "relu":
+            contrib = positive
+        elif identity_activation.lower() == "exp":
+            # exp(x)-1 but numerically stable and with meaningful gradient at 0
+            contrib = torch.expm1(positive)
+        else:
+            raise ValueError("identity_activation must be 'relu' or 'exp'")
+
+        # Top-k per row (after activation), or sum all
+        if use_topk:
+            k_count = max(1, min(L - 1, math.ceil(k * (L - 1))))
+            topk_vals, _ = torch.topk(contrib, k=k_count, dim=1)
+            identity_loss = topk_vals.sum()
+        else:
+            identity_loss = contrib.sum()
+
+        total_loss = total_loss + (coeff_dist * distance_loss + coeff_identity * identity_loss)
+
+    return total_loss/len(x_list)

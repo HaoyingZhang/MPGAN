@@ -7,10 +7,11 @@ os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
 import sys, time
 import torch.autograd as autograd
+import pandas as pd
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
-from src.training.objectives import objective_function_pytorch, objective_function_exponential_pytorch
+from src.training.objectives import objective_function_unified
 
 ### --- WGAN-GP LOOP --- ###
 def train_wgan_gp(train_loader, G, D_net, device='cuda', checkpoint_path="tmp.pth", epoch=10,
@@ -147,12 +148,14 @@ def train_gan(
     epoch=10,
     mp_window_size=10,
     k_violation=1.00,
-    alpha=0.05,
-    objective_func=objective_function_pytorch,
+    alpha=0.5,
+    activ_func="relu",
     time_limit=30,
     d_model="lstm",
     latent = False,
-    pi_mp=0.05
+    pi_mp=0.05,
+    coeff_dist = 1.0,
+    coeff_identity = 1.0
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
@@ -165,7 +168,7 @@ def train_gan(
     criterion   = nn.BCELoss()
 
     best_g_loss = float('inf')
-    D_loss, G_loss = [], []
+    D_loss, G_loss, ADV_G_loss, MP_loss = [], [], [], []
 
     start_time = time.time()
     for ep in range(epoch):
@@ -173,7 +176,7 @@ def train_gan(
             print(f"⏱️  Stopping early at epoch {ep} (time limit).")
             break
 
-        epoch_d, epoch_g = [], []
+        epoch_d, epoch_g, epoch_adv_g, epoch_mp = [], [], [], []
 
         for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, 200, 1]
             # print(mp_input_batch.shape)
@@ -228,29 +231,29 @@ def train_gan(
 
             if d_model == "pulse2pulse":
                 fake_g_in = to_conv1d_shape(fake_for_g, device)  # for D forward
-                # Make list of 1D series for objective_func
-                fake_series_list = list(fake_g_in.squeeze(-1)) if fake_g_in.dim() == 3 else list(fake_g_in)
             else:
                 fake_g_in = fake_for_g.unsqueeze(-1)             # [B, n, 1]
-                fake_series_list = list(fake_g_in.squeeze(-1))   # list of [n] tensors
 
             d_fake_for_g = D_net(fake_g_in)
             g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g))
+            epoch_adv_g.append(g_adv_loss.item())
             # TODO: add the distance with the real ts 
             
             # MP loss
             fake_series_list = [fb[0] if d_model=="pulse2pulse" else fb.squeeze(-1) 
                                 for fb in fake_for_g]
-            mp_loss = objective_func(
+            mp_loss = objective_function_unified(
                 x_list=fake_series_list,
                 mp_list=mp_input_batch,
                 m=mp_window_size,
-                coeff_dist=1.0,
-                coeff_identity=2.0,
-                k=k_violation if objective_func.__name__ != "objective_function_exponential_pytorch" else None,
+                coeff_dist=coeff_dist,
+                coeff_identity=coeff_identity,
+                k=k_violation,
                 device=device,
-                alpha=alpha if objective_func.__name__ == "objective_function_exponential_pytorch" else None
+                alpha=alpha,
+                identity_activation=activ_func
             )
+            epoch_mp.append(mp_loss.item())
 
             g_loss = (g_adv_loss + pi_mp * mp_loss)
 
@@ -258,18 +261,20 @@ def train_gan(
             g_loss.backward()
             optimizer_G.step()
             epoch_g.append(g_loss.item())
+        
+        D_loss.append(np.mean(epoch_d))
+        G_loss.append(np.mean(epoch_g))
+        ADV_G_loss.append(np.mean(epoch_adv_g))
+        MP_loss.append(np.mean(epoch_mp))
+        print(f"Epoch {ep+1}: adv={ADV_G_loss[-1]:.4f}, mp={MP_loss[-1]:.4f}, "
+      f"G={G_loss[-1]:.4f}, D={D_loss[-1]:.4f}")
 
-        # record & display
-        if epoch_d and epoch_g:
-            D_loss.append(np.mean(epoch_d))
-            G_loss.append(np.mean(epoch_g))
-            print(f"Epoch {ep+1}: adv={g_adv_loss.item():.4f}, mp={mp_loss.item():.4f}, "
-      f"G={g_loss.item():.4f}, D={d_loss.item():.4f}")
-
-            # checkpoint best G
-            if G_loss[-1] < best_g_loss:
-                best_g_loss = G_loss[-1]
-                torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
-                print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
-
-    return G, D_net, D_loss, G_loss
+        # checkpoint best G
+        if G_loss[-1] < best_g_loss:
+            best_g_loss = G_loss[-1]
+            torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
+            print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
+        loss_data = {"g_adv_loss":ADV_G_loss, "mp_loss":MP_loss, "G_loss":G_loss, "D_loss": D_loss}
+        loss_df = pd.DataFrame(loss_data)
+        loss_df.to_csv(os.path.join(checkpoint_path,"loss.csv"), index=False)
+    return G, D_net, D_loss, G_loss, g_adv_loss, mp_loss

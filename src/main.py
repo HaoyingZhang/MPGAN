@@ -20,7 +20,7 @@ from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as G_WillBeNamed
 from training.train_baseline import train_gan, train_wgan_gp
 from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive
-from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch
+from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch, objective_function_unified
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
     return (time_series - time_series.min()) / (time_series.max() - time_series.min())
@@ -99,15 +99,22 @@ if __name__ == "__main__":
     parser.add_argument("-k", type=float, default = 1.0, help="Focus on optimizing the top k percent small distance, default : the original objective function")
     parser.add_argument("-g_model", type=str, default = "lstm", help="Choose the G model")
     parser.add_argument("-d_model", type=str, default = "lstm", help="Choose the D model")
-    parser.add_argument("-obj_func", type=str, default = "default", help="Define the objective function used in the training")
+    parser.add_argument("-obj_func", type=str, default = "relu", help="Define the objective function used in the training")
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
+    parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
+    parser.add_argument("-coeff_index", type=float, default = 1.0, help="Define the coefficient of the index loss in MP")
     parser.add_argument("-time", type=int, default = None, help="Time limit" )
     args = parser.parse_args()
 
+    if args.obj_func not in ["relu", "exp"]: 
+        parser.error(f"Must choose objective function between relu or exp, but got {args.obj_func}")
+
     m = args.m
     n = args.n
+    if n-m+1 <= 0:
+        raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -148,10 +155,6 @@ if __name__ == "__main__":
                 pad = np.zeros((n - T,), dtype=np.float32)
                 ts_fixed = np.concatenate([ts, pad], axis=0)
             y_full.append(normalize(ts_fixed))         # use your normalize
-    
-    k = n - m + 1
-    if k <= 0:
-        raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
     X_full = MP_compute_recursive(y_full, m)
@@ -160,8 +163,8 @@ if __name__ == "__main__":
     generator = torch.Generator().manual_seed(args.random_seed)
     n_ts = len(X_full)
     train_set, test_set = random_split(X_full, [8*n_ts//14, 6*n_ts//14], generator=generator)
-    print(f"Training set number: {len(train_set.indices)}")
-    print(f"Test set number: {len(test_set.indices)}")
+    print(f"Training set length: {len(train_set.indices)}")
+    print(f"Test set length: {len(test_set.indices)}")
 
     # Convert Subset -> Tensor
 
@@ -223,14 +226,10 @@ if __name__ == "__main__":
 
     # 3. Train GAN
     model_save_path = f"src/results/baseline/{time_str}/"
-    if args.obj_func == "default":
-        objective_func = objective_function_pytorch
-    else:
-        objective_func = objective_function_exponential_pytorch
     
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
-    G, _, d_loss_list, g_loss_list = train_gan(train_loader, 
+    G, _, d_loss_list, g_loss_list, g_adv_loss_list, mp_loss_list = train_gan(train_loader, 
                                                 G, D_net, 
                                                 device=device, 
                                                 checkpoint_path=model_save_path, 
@@ -238,11 +237,13 @@ if __name__ == "__main__":
                                                 mp_window_size=args.m, 
                                                 k_violation=args.k, 
                                                 alpha=args.alpha, 
-                                                objective_func=objective_func, 
+                                                activ_func=args.obj_func, 
                                                 time_limit=args.time,
                                                 d_model = args.d_model,
                                                 pi_mp=args.pi_mp,
-                                                latent=args.enable_latent)
+                                                latent=args.enable_latent,
+                                                coeff_dist = args.coeff_dist,
+                                                coeff_identity=args.coeff_index)
 
     # G, _, d_loss_list, g_loss_list = train_wgan_gp(train_loader, 
     #                                             G, D_net, 
