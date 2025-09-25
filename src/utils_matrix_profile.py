@@ -14,8 +14,8 @@ def compute_matrix_profile_distance(real_series, fake_series, window_size=10):
     Compute the average Euclidean matrix profile distance + average index mismatch
     between real and fake univariate time series sets.
     """
-    real_np = real_series.astype(np.float64)
-    fake_np = fake_series.astype(np.float64)
+    real_np = real_series.numpy().astype(np.float64)
+    fake_np = fake_series.numpy().astype(np.float64)
 
     total_dist = 0.0
     total_index_mismatch = 0.0

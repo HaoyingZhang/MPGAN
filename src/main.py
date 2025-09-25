@@ -266,7 +266,7 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         if args.enable_latent:
-            z = torch.randn(test_tensor.size(0), 64, device=device) if G.z_dim else None
+            z = torch.randn(test_tensor.size(0), 64, device='cpu') if G.z_dim else None
             fake_data = G(test_tensor, z=z)
         else:
             fake_data = G(test_tensor)
