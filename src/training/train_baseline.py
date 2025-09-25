@@ -210,7 +210,7 @@ def train_gan(
 
             loss_real = criterion(d_real, real_labels)
             loss_fake = criterion(d_fake, fake_labels)
-            d_loss = 0.5 * (loss_real + loss_fake).mean()
+            d_loss = loss_real + loss_fake
 
             optimizer_D.zero_grad()
             d_loss.backward()
@@ -235,7 +235,8 @@ def train_gan(
                 fake_series_list = list(fake_g_in.squeeze(-1))   # list of [n] tensors
 
             d_fake_for_g = D_net(fake_g_in)
-            g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g)).mean()
+            g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g))
+            # TODO: add the distance with the real ts 
             
             # MP loss
             fake_series_list = [fb[0] if d_model=="pulse2pulse" else fb.squeeze(-1) 
