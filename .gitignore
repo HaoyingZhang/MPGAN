@@ -3,3 +3,6 @@ src/results/
 test/
 *.json
 *.png
+colab/
+papers/
+optuna_ckpts/

@@ -154,8 +154,11 @@ def train_gan(
     d_model="lstm",
     latent = False,
     pi_mp=0.05,
+    pi_adv=1,
     coeff_dist = 1.0,
-    coeff_identity = 1.0
+    coeff_identity = 1.0,
+    lr_G=2e-4,             
+    lr_D=2e-4
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
@@ -163,8 +166,8 @@ def train_gan(
     G      = G.to(device)
     D_net  = D_net.to(device)
 
-    optimizer_G = torch.optim.Adam(G.parameters(),     lr=2e-4)
-    optimizer_D = torch.optim.Adam(D_net.parameters(), lr=2e-4)
+    optimizer_G = torch.optim.Adam(G.parameters(),     lr=lr_G)
+    optimizer_D = torch.optim.Adam(D_net.parameters(), lr=lr_D)
     criterion   = nn.BCELoss()
 
     best_g_loss = float('inf')
@@ -255,7 +258,7 @@ def train_gan(
             )
             epoch_mp.append(mp_loss.item())
 
-            g_loss = (g_adv_loss + pi_mp * mp_loss)
+            g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss)
 
             optimizer_G.zero_grad()
             g_loss.backward()
