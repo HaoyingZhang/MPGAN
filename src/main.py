@@ -102,7 +102,10 @@ if __name__ == "__main__":
     parser.add_argument("-obj_func", type=str, default = "relu", help="Define the objective function used in the training")
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
+    parser.add_argument("-pi_adv", type=float, default = 0.05, help="Define the coefficient of the adversary loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
+    parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
+    parser.add_argument("-lr_d", type=float, default=1e-5, help="Learning rate for Discriminator")
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
     parser.add_argument("-coeff_index", type=float, default = 1.0, help="Define the coefficient of the index loss in MP")
     parser.add_argument("-time", type=int, default = None, help="Time limit" )
@@ -215,7 +218,7 @@ if __name__ == "__main__":
                 num_blocks=6,
                 dilations=(1,2,4,8,16,32),
                 use_attention=True,
-                z_dim=64,          # or None to disable latent z
+                z_dim=64 if args.enable_latent else None,
                 y_dim=None         # or e.g. 10 if you have labels/classes
             )
 
@@ -241,6 +244,9 @@ if __name__ == "__main__":
                                                 time_limit=args.time,
                                                 d_model = args.d_model,
                                                 pi_mp=args.pi_mp,
+                                                pi_adv=args.pi_adv,
+                                                lr_D=args.lr_d,
+                                                lr_G=args.lr_g,
                                                 latent=args.enable_latent,
                                                 coeff_dist = args.coeff_dist,
                                                 coeff_identity=args.coeff_index)
@@ -267,14 +273,14 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         if args.enable_latent:
-            z = torch.randn(test_tensor.size(0), 64, device='cpu') if G.z_dim else None
-            fake_data = G(test_tensor, z=z)
+            z = torch.randn(train_tensor.size(0), 64, device='cpu') if G.z_dim else None
+            fake_data = G(train_tensor, z=z)
         else:
-            fake_data = G(test_tensor)
-    test_file_names = [files[i] for i in test_set.indices]
+            fake_data = G(train_tensor)
+    test_file_names = [files[i] for i in train_set.indices]
     # Plot results
     if args.plot:
-        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m)
+        plot_res(model_save_path, train_labels, fake_data, test_file_names, args.m)
     
     # 5. Evaluate Utility: Matrix Profile
     # utility_score = np.mean([compute_matrix_profile_distance(real_x.squeeze(), fake_x.squeeze()) for real_x, fake_x in zip(test_set, fake_data)])
@@ -289,7 +295,7 @@ if __name__ == "__main__":
     for i in range(5):
         plt.subplot(5, 1, i + 1)
         plt.plot(fake_data[i, :], label=f"Fake Sample {i}")
-        plt.plot(normalize(test_labels[i]), label=f"Real Sample {i}")
+        plt.plot(normalize(train_labels[i]), label=f"Real Sample {i}")
         plt.legend()
         plt.tight_layout()
 
