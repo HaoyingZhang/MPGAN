@@ -40,6 +40,7 @@ def plot_res(folder_name, real_data, fake_data, name_list, m):
         file_name_short = os.path.splitext(os.path.basename(file_name))[0]
         real_ts = real_ts.numpy().squeeze().astype(np.float64)
         fake_ts = fake_ts.numpy().squeeze().astype(np.float64)
+        fake_ts = normalize(fake_ts)
         os.makedirs(os.path.join(folder_name, file_name_short), exist_ok=True)
         res_json = {
             "data": real_ts.tolist(),
