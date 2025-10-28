@@ -1,7 +1,7 @@
 import optuna, os, shutil, numpy as np, torch, random
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from datetime import datetime
-import sys, argparse
+import sys, argparse, glob
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))  # Add root directory to path
 from models.CNN import Discriminator as D_WillBeNamed
 from models.WillBeNamed import Generator as G_WillBeNamed
@@ -44,7 +44,8 @@ def eval_generator_mp(
     m_eval=32,              # FIXED across trials
     alpha_eval=0.5,        # FIXED
     k_eval=1.0,             # FIXED
-    activ_eval="relu"       # FIXED
+    activ_eval="relu",       # FIXED
+    mp_m = 10
 ):
     G.eval()
     mp_vals = []
@@ -60,7 +61,7 @@ def eval_generator_mp(
         mp_loss_val = objective_function_unified(
             x_list=fake.squeeze(-1),
             mp_list=mp_input_batch,
-            m=10,
+            m=mp_m,
             coeff_dist=1.0,          # fixed
             coeff_identity=1.0,      # fixed
             k=1.0,
@@ -72,11 +73,11 @@ def eval_generator_mp(
 
     return float(np.mean(mp_vals)) if mp_vals else float("inf")
 
-def objective(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ckpts"):
+def objective(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ckpts", n=200, m=10):
     # --- search space ---
     # Constants
-    m = 10
-    n = 200
+    m = m
+    n = n
     alpha = 0.5
     d_model = "lstm"
     k_violation    = trial.suggest_float("k_violation", 0.1, 1.0)
@@ -145,7 +146,8 @@ def objective(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ck
         m_eval=10,          # keep fixed across all trials
         alpha_eval=0.5,
         k_eval=1.0,
-        activ_eval="relu"
+        activ_eval="relu",
+        mp_m=m
     )
     # report & (optional) prune based on intermediate value
     trial.report(val_score, step=epoch)
@@ -154,7 +156,7 @@ def objective(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ck
 
     return val_score  # MINIMIZE this (lower MP distance is better)
 
-def run_optuna(train_loader, n_trials=30, device="cuda"):
+def run_optuna(train_loader, n, m, n_trials=30, device="cuda"):
     # Sampler/Pruner choices you can tweak
     sampler = optuna.samplers.TPESampler(seed=123)
     pruner  = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
@@ -167,7 +169,7 @@ def run_optuna(train_loader, n_trials=30, device="cuda"):
     )
 
     study.optimize(
-        lambda t: objective(t, train_loader=train_loader, device=device),
+        lambda t: objective(t, train_loader=train_loader, device=device, n=n, m=m),
         n_trials=n_trials,
         gc_after_trial=True,
         show_progress_bar=True
@@ -206,7 +208,7 @@ if __name__ == "__main__":
             y_full.append(normalize(ts))       # use your normalize
     else:
         if args.category == "ecg":
-            data_dir = "data/ecg/original"
+            data_dir = "data/ecg/ecg_long"
             files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.npy")))
         elif args.category == "energy":
             data_dir = "data/energy/original"
@@ -236,7 +238,7 @@ if __name__ == "__main__":
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
     n_ts = len(X_full)
-    train_set, test_set = random_split(X_full, [8*n_ts//14, 6*n_ts//14], generator=generator)
+    train_set, test_set = random_split(X_full, [10*n_ts//14, 4*n_ts//14], generator=generator)
     print(f"Training set length: {len(train_set.indices)}")
     print(f"Test set length: {len(test_set.indices)}")
 
@@ -266,7 +268,8 @@ if __name__ == "__main__":
     assert n_input == 2*(n-m+1)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    study = run_optuna(train_loader, n_trials=40, device=device)
+    print(device)
+    study = run_optuna(train_loader, n_trials=40, device=device, n=args.n, m=args.m)
 
     # Rebuild models with best params and retrain longer if you want a final model:
     # best = study.best_trial.params

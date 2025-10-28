@@ -6,3 +6,6 @@ test/
 colab/
 papers/
 optuna_ckpts/
+data/
+.venv
+exe.sh

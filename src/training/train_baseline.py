@@ -171,7 +171,7 @@ def train_gan(
     criterion   = nn.BCELoss()
 
     best_g_loss = float('inf')
-    D_loss, G_loss, ADV_G_loss, MP_loss = [], [], [], []
+    D_loss, G_loss, ADV_G_loss, MP_loss, TS_loss = [], [], [], [], []
 
     start_time = time.time()
     for ep in range(epoch):
@@ -207,7 +207,6 @@ def train_gan(
                 time_series_batch = time_series_batch.unsqueeze(-1)
                 time_series_batch = time_series_batch.to(device)   
 
-                
             d_real = D_net(time_series_batch)
             d_fake = D_net(fake)
 
@@ -239,6 +238,8 @@ def train_gan(
 
             d_fake_for_g = D_net(fake_g_in)
             g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g))
+            ts_loss = ((fake_g_in - time_series_batch)**2).mean()
+            TS_loss.append(ts_loss.item())
             epoch_adv_g.append(g_adv_loss.item())
             # TODO: add the distance with the real ts 
             
@@ -258,7 +259,7 @@ def train_gan(
             )
             epoch_mp.append(mp_loss.item())
 
-            g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss)
+            g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 10 * ts_loss)
 
             optimizer_G.zero_grad()
             g_loss.backward()

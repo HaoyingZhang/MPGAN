@@ -1,0 +1,12 @@
+Best params:
+  k_violation: 0.6199944152858059
+  activ_func: relu
+  latent: False
+  pi_mp: 0.08514970101241016
+  pi_adv: 0.2926128427835569
+  coeff_dist: 0.29580216431013057
+  coeff_identity: 0.1421544457875605
+  lr_G: 0.00021688430686096275
+  lr_D: 0.0003272699177695473
+  epoch: 14
+  time_limit: 52
