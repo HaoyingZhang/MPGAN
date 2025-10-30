@@ -18,7 +18,7 @@ from models.BiLSTM_latent import Generator as G_biLSTM
 from models.CNN import Discriminator as D
 from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as G_WillBeNamed
-from training.train_baseline import train_gan, train_wgan_gp
+from training.train_baseline import train_gan, train_wgan_gp, train_inverse
 from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive
 from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch, objective_function_unified
 
@@ -136,7 +136,7 @@ if __name__ == "__main__":
             y_full.append(normalize(ts))       # use your normalize
     else:
         if args.category == "ecg":
-            data_dir = "data/ecg/original"
+            data_dir = "data/ecg/long"
             files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.npy")))
         elif args.category == "energy":
             data_dir = "data/energy/original"
@@ -166,7 +166,7 @@ if __name__ == "__main__":
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
     n_ts = len(X_full)
-    train_set, test_set = random_split(X_full, [8*n_ts//14, 6*n_ts//14], generator=generator)
+    train_set, test_set = random_split(X_full, [10*n_ts//14, 4*n_ts//14], generator=generator)
     print(f"Training set length: {len(train_set.indices)}")
     print(f"Test set length: {len(test_set.indices)}")
 
@@ -231,37 +231,41 @@ if __name__ == "__main__":
     # 3. Train GAN
     model_save_path = f"src/results/baseline/{time_str}/"
     
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
-    G, _, d_loss_list, g_loss_list, g_adv_loss_list, mp_loss_list = train_gan(train_loader, 
-                                                G, D_net, 
-                                                device=device, 
-                                                checkpoint_path=model_save_path, 
-                                                epoch=train_epoch, 
-                                                mp_window_size=args.m, 
-                                                k_violation=args.k, 
-                                                alpha=args.alpha, 
-                                                activ_func=args.obj_func, 
-                                                time_limit=args.time,
-                                                d_model = args.d_model,
-                                                pi_mp=args.pi_mp,
-                                                pi_adv=args.pi_adv,
-                                                lr_D=args.lr_d,
-                                                lr_G=args.lr_g,
-                                                latent=args.enable_latent,
-                                                coeff_dist = args.coeff_dist,
-                                                coeff_identity=args.coeff_index)
-
-    # G, _, d_loss_list, g_loss_list = train_wgan_gp(train_loader, 
+    # G, _, d_loss_list, g_loss_list, g_adv_loss_list, mp_loss_list = train_gan(train_loader, 
     #                                             G, D_net, 
-    #                                             device='cpu', 
+    #                                             device=device, 
     #                                             checkpoint_path=model_save_path, 
     #                                             epoch=train_epoch, 
     #                                             mp_window_size=args.m, 
     #                                             k_violation=args.k, 
     #                                             alpha=args.alpha, 
-    #                                             objective_func=objective_func, 
-    #                                             time_limit=args.time)
+    #                                             activ_func=args.obj_func, 
+    #                                             time_limit=args.time,
+    #                                             d_model = args.d_model,
+    #                                             pi_mp=args.pi_mp,
+    #                                             pi_adv=args.pi_adv,
+    #                                             lr_D=args.lr_d,
+    #                                             lr_G=args.lr_g,
+    #                                             latent=args.enable_latent,
+    #                                             coeff_dist = args.coeff_dist,
+    #                                             coeff_identity=args.coeff_index)
+    G,g_loss_list, mp_loss_list = train_inverse(train_loader, 
+                                                 G, 
+                                                 device=device, 
+                                                 checkpoint_path=model_save_path, 
+                                                 epoch=train_epoch, 
+                                                 mp_window_size=args.m, 
+                                                 k_violation=args.k, 
+                                                 alpha=args.alpha, 
+                                                 activ_func=args.obj_func, 
+                                                 time_limit=args.time,
+                                                 pi_mp=args.pi_mp,
+                                                 lr_G=args.lr_g,
+                                                 latent=args.enable_latent,
+                                                 coeff_dist = args.coeff_dist,
+                                                 coeff_identity=args.coeff_index)
 
     G.load_state_dict(torch.load(model_save_path+"best_model.pth"))
     G = G.cpu()

@@ -179,7 +179,7 @@ def train_gan(
             print(f"⏱️  Stopping early at epoch {ep} (time limit).")
             break
 
-        epoch_d, epoch_g, epoch_adv_g, epoch_mp = [], [], [], []
+        epoch_d, epoch_g, epoch_adv_g, epoch_mp, epoch_ts = [], [], [], [], []
 
         for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, 200, 1]
             # print(mp_input_batch.shape)
@@ -239,7 +239,7 @@ def train_gan(
             d_fake_for_g = D_net(fake_g_in)
             g_adv_loss = criterion(d_fake_for_g, torch.ones_like(d_fake_for_g))
             ts_loss = ((fake_g_in - time_series_batch)**2).mean()
-            TS_loss.append(ts_loss.item())
+            epoch_ts.append(ts_loss.item())
             epoch_adv_g.append(g_adv_loss.item())
             # TODO: add the distance with the real ts 
             
@@ -259,7 +259,8 @@ def train_gan(
             )
             epoch_mp.append(mp_loss.item())
 
-            g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 10 * ts_loss)
+            # g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 500 * ts_loss)
+            g_loss = 500 * ts_loss
 
             optimizer_G.zero_grad()
             g_loss.backward()
@@ -270,7 +271,8 @@ def train_gan(
         G_loss.append(np.mean(epoch_g))
         ADV_G_loss.append(np.mean(epoch_adv_g))
         MP_loss.append(np.mean(epoch_mp))
-        print(f"Epoch {ep+1}: adv={ADV_G_loss[-1]:.4f}, mp={MP_loss[-1]:.4f}, "
+        TS_loss.append(np.mean(epoch_ts))
+        print(f"Epoch {ep+1}: adv={ADV_G_loss[-1]:.4f}, mp={MP_loss[-1]:.4f}, ts_loss={TS_loss[-1]:.4f}, "
       f"G={G_loss[-1]:.4f}, D={D_loss[-1]:.4f}")
 
         # checkpoint best G
@@ -282,3 +284,97 @@ def train_gan(
         loss_df = pd.DataFrame(loss_data)
         loss_df.to_csv(os.path.join(checkpoint_path,"loss.csv"), index=False)
     return G, D_net, D_loss, G_loss, g_adv_loss, mp_loss
+
+def train_inverse(
+    train_loader,
+    G,
+    device='cuda',
+    checkpoint_path="tmp.pth",
+    epoch=10,
+    mp_window_size=10,
+    k_violation=1.00,
+    alpha=0.5,
+    activ_func="relu",
+    time_limit=30,
+    latent = False,
+    pi_mp=0.05,
+    coeff_dist = 1.0,
+    coeff_identity = 1.0,
+    lr_G=2e-4             
+):
+    os.makedirs(checkpoint_path, exist_ok=True)
+
+    # Move models once
+    G      = G.to(device)
+
+    optimizer_G = torch.optim.Adam(G.parameters(),     lr=lr_G)
+    criterion   = nn.BCELoss()
+
+    best_g_loss = float('inf')
+    G_loss, MP_loss = [], []
+
+    start_time = time.time()
+    for ep in range(epoch):
+        if time.time() - start_time >= time_limit:
+            print(f"⏱️  Stopping early at epoch {ep} (time limit).")
+            break
+
+        epoch_g, epoch_mp = [], []
+
+        for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, n, 1]
+            # print(mp_input_batch.shape)
+            # print(time_series_batch.shape)
+            # Skip empty batches
+            if mp_input_batch.size(0) == 0:
+                continue
+
+            # --- Generator Train ---#
+            mp_input_batch = mp_input_batch.to(device)
+            optimizer_G.zero_grad()
+
+            if latent:
+                z = torch.randn(mp_input_batch.size(0), 64, device=device) if G.z_dim else None
+                fake_for_g = G(mp_input_batch, z=z)     # fresh graph
+            else:
+                fake_for_g = G(mp_input_batch)
+
+            # ts_loss = ((fake_g_in - time_series_batch)**2).mean()
+            # epoch_ts.append(ts_loss.item())
+            
+            # MP loss
+            fake_series_list = [fb.squeeze(-1) for fb in fake_for_g]
+            mp_loss = objective_function_unified(
+                x_list=fake_series_list,
+                mp_list=mp_input_batch,
+                m=mp_window_size,
+                coeff_dist=coeff_dist,
+                coeff_identity=coeff_identity,
+                k=k_violation,
+                device=device,
+                alpha=alpha,
+                identity_activation=activ_func
+            )
+            epoch_mp.append(mp_loss.item())
+
+            # g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 500 * ts_loss)
+            g_loss = pi_mp * mp_loss
+
+            optimizer_G.zero_grad()
+            g_loss.backward()
+            optimizer_G.step()
+            epoch_g.append(g_loss.item())
+        
+        G_loss.append(np.mean(epoch_g))
+        MP_loss.append(np.mean(epoch_mp))
+        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, "
+      f"G={G_loss[-1]:.4f}")
+
+        # checkpoint best G
+        if G_loss[-1] < best_g_loss:
+            best_g_loss = G_loss[-1]
+            torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
+            print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
+        loss_data = {"mp_loss":MP_loss, "G_loss":G_loss}
+        loss_df = pd.DataFrame(loss_data)
+        loss_df.to_csv(os.path.join(checkpoint_path,"loss.csv"), index=False)
+    return G, G_loss, mp_loss
