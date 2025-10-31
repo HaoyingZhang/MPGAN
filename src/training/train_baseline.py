@@ -311,9 +311,9 @@ def train_inverse(
     optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
     # criterion   = nn.BCELoss()
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5, patience=5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5)
 
-    best_val = float('inf'); patience=15; bad=0
+    best_val = float('inf')
 
     best_g_loss = float('inf')
     G_loss, MP_loss, VAL_loss = [], [], []
@@ -396,14 +396,9 @@ def train_inverse(
         scheduler.step(val_mp) 
 
         if val_mp < best_val:
-            best_val = val_mp; bad = 0
+            best_val = val_mp
             torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
             print(f"✅ New best (val) at epoch {ep+1}: {best_val:.4f}")
-        else:
-            bad += 1
-            if bad >= patience:
-                print(f"⏹️ Early stopping at epoch {ep+1} (no val improvement for {patience} epochs).")
-                break
 
         # # checkpoint best G
         # if G_loss[-1] < best_g_loss:

@@ -322,10 +322,10 @@ if __name__ == "__main__":
 
     # 7. Plot the loss curves
     # d_loss_list_np = np.array(d_loss_list)
-    g_loss_list_np = np.array(g_loss_list)
+    g_loss_list_np = np.array(G_loss)
     plt.figure(figsize=(8, 5))
     # plt.plot(d_loss_list, label="Discriminator Loss", marker='o')
-    plt.plot(g_loss_list, label="Generator Loss", marker='x')
+    plt.plot(g_loss_list_np, label="Generator Loss", marker='x')
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("GAN Loss per Epoch")

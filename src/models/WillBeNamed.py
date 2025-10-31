@@ -45,7 +45,7 @@ class ResDilatedBlock(nn.Module):
         if self.film is not None and gamma is not None and beta is not None:
             h2 = h2 * (1 + gamma) + beta
         h2 = self.act(h2)
-        h2 = self.drop(h2)
+        # h2 = self.drop(h2)
         h2 = self.conv2(h2)
         return x + h2  # residual
 
@@ -68,8 +68,8 @@ class SelfAttention1D(nn.Module):
         attn_out, _ = self.attn(h, h, h, need_weights=False)
         h = h + attn_out               # residual
         h = h.transpose(1, 2)          # [B,C,L]
-        h = self.proj_out(h)
-        h = self.drop(h)
+        # h = self.proj_out(h)
+        # h = self.drop(h)
         return x + h                   # residual
 
 
@@ -207,7 +207,7 @@ class Generator(nn.Module):
         # Interpolate length L -> n smoothly
         if h.size(-1) != self.n:
             h = F.interpolate(h, size=self.n, mode='linear', align_corners=False)  # [B,C,n]
-
+        h = nn.Dropout(0.1)
         # Head to 1 channel and squash to [0,1]
         y_hat = self.head(h).squeeze(1)           # [B,n]
         y_hat = torch.sigmoid(y_hat)              # scale to [0,1]; swap to tanh if your target is [-1,1]
