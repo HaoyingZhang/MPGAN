@@ -24,7 +24,7 @@ def compute_matrix_profile_distance(real_series, fake_series, window_size=10):
     mp_fake = stumpy.stump(fake_np, m=window_size)
 
     # Distance profile
-    dist = np.linalg.norm(mp_real[:, 0] - mp_fake[:, 0])
+    dist = np.linalg.norm(mp_real[:, 0] - mp_fake[:, 0]) # L2 norm
     # Index mismatch
     index_diff = mp_real[:, 1] != mp_fake[:, 1]
     mismatch = index_diff.sum() / len(index_diff)
