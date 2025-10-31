@@ -287,6 +287,7 @@ def train_gan(
 
 def train_inverse(
     train_loader,
+    val_loader,
     G,
     device='cuda',
     checkpoint_path="tmp.pth",
@@ -307,30 +308,35 @@ def train_inverse(
     # Move models once
     G      = G.to(device)
 
-    optimizer_G = torch.optim.Adam(G.parameters(),     lr=lr_G)
-    criterion   = nn.BCELoss()
+    optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
+    # criterion   = nn.BCELoss()
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5, patience=5)
+
+    best_val = float('inf'); patience=15; bad=0
 
     best_g_loss = float('inf')
-    G_loss, MP_loss = [], []
+    G_loss, MP_loss, VAL_loss = [], [], []
 
     start_time = time.time()
+
     for ep in range(epoch):
         if time.time() - start_time >= time_limit:
             print(f"⏱️  Stopping early at epoch {ep} (time limit).")
             break
 
+        G.train()
+
         epoch_g, epoch_mp = [], []
 
         for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, n, 1]
-            # print(mp_input_batch.shape)
-            # print(time_series_batch.shape)
             # Skip empty batches
             if mp_input_batch.size(0) == 0:
                 continue
 
             # --- Generator Train ---#
             mp_input_batch = mp_input_batch.to(device)
-            optimizer_G.zero_grad()
+            # optimizer_G.zero_grad()
 
             if latent:
                 z = torch.randn(mp_input_batch.size(0), 64, device=device) if G.z_dim else None
@@ -354,7 +360,6 @@ def train_inverse(
                 alpha=alpha,
                 identity_activation=activ_func
             )
-            epoch_mp.append(mp_loss.item())
 
             # g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 500 * ts_loss)
             g_loss = pi_mp * mp_loss
@@ -362,19 +367,51 @@ def train_inverse(
             optimizer_G.zero_grad()
             g_loss.backward()
             optimizer_G.step()
+
+            epoch_mp.append(mp_loss.item())
             epoch_g.append(g_loss.item())
         
         G_loss.append(np.mean(epoch_g))
         MP_loss.append(np.mean(epoch_mp))
-        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, "
-      f"G={G_loss[-1]:.4f}")
+        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, G={G_loss[-1]:.4f}")
 
-        # checkpoint best G
-        if G_loss[-1] < best_g_loss:
-            best_g_loss = G_loss[-1]
+        # ----- validation -----
+        G.eval()
+        with torch.no_grad():
+            val_losses = []
+            for mp_in, _ts in val_loader:
+                mp_in = mp_in.to(device)
+                z = torch.randn(mp_in.size(0), 64, device=device) if latent and G.z_dim else None
+                fake = G(mp_in, z=z) if latent else G(mp_in)
+                fake_series_list = [f.squeeze(-1) for f in fake]
+                vloss = objective_function_unified(
+                    x_list=fake_series_list, mp_list=mp_in,
+                    m=mp_window_size, coeff_dist=coeff_dist, coeff_identity=coeff_identity,
+                    k=k_violation, device=device, alpha=alpha, identity_activation=activ_func
+                )
+                val_losses.append(vloss.item())
+
+        val_mp = float(np.mean(val_losses)) if val_losses else float("inf")
+        VAL_loss.append(val_mp)
+        scheduler.step(val_mp) 
+
+        if val_mp < best_val:
+            best_val = val_mp; bad = 0
             torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
-            print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
-        loss_data = {"mp_loss":MP_loss, "G_loss":G_loss}
-        loss_df = pd.DataFrame(loss_data)
-        loss_df.to_csv(os.path.join(checkpoint_path,"loss.csv"), index=False)
-    return G, G_loss, mp_loss
+            print(f"✅ New best (val) at epoch {ep+1}: {best_val:.4f}")
+        else:
+            bad += 1
+            if bad >= patience:
+                print(f"⏹️ Early stopping at epoch {ep+1} (no val improvement for {patience} epochs).")
+                break
+
+        # # checkpoint best G
+        # if G_loss[-1] < best_g_loss:
+        #     best_g_loss = G_loss[-1]
+        #     torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
+        #     print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
+        pd.DataFrame({
+            "train_mp": MP_loss, "train_G": G_loss, "val_mp": VAL_loss
+        }).to_csv(os.path.join(checkpoint_path, "loss.csv"), index=False)
+
+    return G, G_loss, MP_loss, VAL_loss, best_val

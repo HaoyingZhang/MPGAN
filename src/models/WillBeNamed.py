@@ -23,7 +23,7 @@ class FiLM(nn.Module):
 
 class ResDilatedBlock(nn.Module):
     """Residual 1D conv block with dilation + GroupNorm + GELU."""
-    def __init__(self, channels, dilation, film: FiLM | None = None):
+    def __init__(self, channels, dilation, film: FiLM | None = None, p_drop: float = 0.1):
         super().__init__()
         self.conv1 = nn.Conv1d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation)
@@ -31,6 +31,7 @@ class ResDilatedBlock(nn.Module):
         self.norm2 = nn.GroupNorm(8, channels)
         self.film = film
         self.act = nn.GELU()
+        self.drop = nn.Dropout(p_drop)
 
     def forward(self, x, gamma=None, beta=None):
         # x: [B,C,L]
@@ -44,18 +45,20 @@ class ResDilatedBlock(nn.Module):
         if self.film is not None and gamma is not None and beta is not None:
             h2 = h2 * (1 + gamma) + beta
         h2 = self.act(h2)
+        h2 = self.drop(h2)
         h2 = self.conv2(h2)
         return x + h2  # residual
 
 
 class SelfAttention1D(nn.Module):
     """Multi-head self-attention over sequence length (channels as features)."""
-    def __init__(self, channels, num_heads=4):
+    def __init__(self, channels, num_heads=4, attn_drop=0.1, proj_drop=0.1):
         super().__init__()
         self.proj_in  = nn.Conv1d(channels, channels, kernel_size=1)
-        self.attn     = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True)
+        self.attn     = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True, dropout=attn_drop)
         self.proj_out = nn.Conv1d(channels, channels, kernel_size=1)
         self.ln = nn.LayerNorm(channels)
+        self.drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
         # x: [B,C,L] -> [B,L,C] for attention
@@ -66,6 +69,7 @@ class SelfAttention1D(nn.Module):
         h = h + attn_out               # residual
         h = h.transpose(1, 2)          # [B,C,L]
         h = self.proj_out(h)
+        h = self.drop(h)
         return x + h                   # residual
 
 
@@ -87,7 +91,10 @@ class Generator(nn.Module):
         use_attention: bool = True,
         z_dim: int | None = 64,        # set None to disable latent conditioning
         y_dim: int | None = None,      # set to num_classes for label conditioning; None to disable
-        film_hidden: int = 128
+        film_hidden: int = 128,
+        p_drop=0.1,
+        attn_drop=0.1,
+        proj_drop=0.1
     ):
         super().__init__()
         assert num_blocks == len(dilations), "num_blocks must match length of dilations"
@@ -106,12 +113,12 @@ class Generator(nn.Module):
 
         # Stack of dilated residual blocks (TCN-style)
         self.blocks = nn.ModuleList([
-            ResDilatedBlock(base_channels, d, film=(self.film is not None))
+            ResDilatedBlock(base_channels, d, film=(self.film is not None), p_drop=p_drop)
             for d in dilations
         ])
 
         # Optional attention
-        self.attn = SelfAttention1D(base_channels, num_heads=4) if use_attention else None
+        self.attn = SelfAttention1D(base_channels, num_heads=4, attn_drop=attn_drop, proj_drop=proj_drop) if use_attention else None
 
         # Head: keep length L, then interpolate to n, then final conv -> 1 channel, sigmoid
         self.mid_norm = nn.GroupNorm(8, base_channels)

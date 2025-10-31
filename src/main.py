@@ -166,8 +166,9 @@ if __name__ == "__main__":
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
     n_ts = len(X_full)
-    train_set, test_set = random_split(X_full, [10*n_ts//14, 4*n_ts//14], generator=generator)
+    train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
     print(f"Training set length: {len(train_set.indices)}")
+    print(f"Validation set length: {len(val_set.indices)}")
     print(f"Test set length: {len(test_set.indices)}")
 
     # Convert Subset -> Tensor
@@ -177,6 +178,10 @@ if __name__ == "__main__":
                                 for i in train_set.indices])
     train_tensor = train_tensor.view(train_tensor.size(0), -1)
 
+    val_tensor = torch.stack([torch.tensor(X_full[i], dtype=torch.float32) 
+                                for i in val_set.indices])
+    val_tensor = val_tensor.view(val_tensor.size(0), -1)
+
     test_tensor = torch.stack([torch.tensor(X_full[i], dtype=torch.float32) 
                                 for i in test_set.indices])
     test_tensor = test_tensor.view(test_tensor.size(0), -1)
@@ -184,11 +189,16 @@ if __name__ == "__main__":
     # Train and test labels
     train_labels = torch.stack([torch.tensor(y_full[i], dtype=torch.float32) 
                                 for i in train_set.indices])
+    val_labels = torch.stack([torch.tensor(y_full[i], dtype=torch.float32) 
+                                for i in val_set.indices])
     test_labels = torch.stack([torch.tensor(y_full[i], dtype=torch.float32) 
                                 for i in train_set.indices])
 
     train_dataset = TensorDataset(train_tensor, train_labels)
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+
+    val_dataset = TensorDataset(val_tensor, val_labels)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=True)
 
     # Initialize model hyperparameters
     batch_size, n_input = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
@@ -251,7 +261,8 @@ if __name__ == "__main__":
     #                                             latent=args.enable_latent,
     #                                             coeff_dist = args.coeff_dist,
     #                                             coeff_identity=args.coeff_index)
-    G,g_loss_list, mp_loss_list = train_inverse(train_loader, 
+    G, G_loss, MP_loss, VAL_loss, best_val = train_inverse(train_loader,
+                                                val_loader, 
                                                  G, 
                                                  device=device, 
                                                  checkpoint_path=model_save_path, 
