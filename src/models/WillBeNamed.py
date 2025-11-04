@@ -52,10 +52,10 @@ class ResDilatedBlock(nn.Module):
 
 class SelfAttention1D(nn.Module):
     """Multi-head self-attention over sequence length (channels as features)."""
-    def __init__(self, channels, num_heads=4, attn_drop=0.1, proj_drop=0.1):
+    def __init__(self, channels, num_heads=4, proj_drop=0.1):
         super().__init__()
         self.proj_in  = nn.Conv1d(channels, channels, kernel_size=1)
-        self.attn     = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True, dropout=attn_drop)
+        self.attn     = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True)
         self.proj_out = nn.Conv1d(channels, channels, kernel_size=1)
         self.ln = nn.LayerNorm(channels)
         self.drop = nn.Dropout(proj_drop)
@@ -68,7 +68,7 @@ class SelfAttention1D(nn.Module):
         attn_out, _ = self.attn(h, h, h, need_weights=False)
         h = h + attn_out               # residual
         h = h.transpose(1, 2)          # [B,C,L]
-        # h = self.proj_out(h)
+        h = self.proj_out(h)
         # h = self.drop(h)
         return x + h                   # residual
 
@@ -118,13 +118,13 @@ class Generator(nn.Module):
         ])
 
         # Optional attention
-        self.attn = SelfAttention1D(base_channels, num_heads=4, attn_drop=attn_drop, proj_drop=proj_drop) if use_attention else None
+        self.attn = SelfAttention1D(base_channels, num_heads=4, proj_drop=proj_drop) if use_attention else None
 
         # Head: keep length L, then interpolate to n, then final conv -> 1 channel, sigmoid
         self.mid_norm = nn.GroupNorm(8, base_channels)
         self.mid_act  = nn.GELU()
         self.head     = nn.Conv1d(base_channels, 1, kernel_size=3, padding=1)
-
+        self.drop = nn.Dropout(0.1)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -207,8 +207,8 @@ class Generator(nn.Module):
         # Interpolate length L -> n smoothly
         if h.size(-1) != self.n:
             h = F.interpolate(h, size=self.n, mode='linear', align_corners=False)  # [B,C,n]
-        h = nn.Dropout(0.1)
+        h = self.drop(h)
         # Head to 1 channel and squash to [0,1]
         y_hat = self.head(h).squeeze(1)           # [B,n]
-        y_hat = torch.sigmoid(y_hat)              # scale to [0,1]; swap to tanh if your target is [-1,1]
+        # y_hat = torch.sigmoid(y_hat)              # scale to [0,1]; swap to tanh if your target is [-1,1]
         return y_hat

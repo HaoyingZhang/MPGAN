@@ -105,6 +105,7 @@ if __name__ == "__main__":
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
     parser.add_argument("-pi_adv", type=float, default = 0.05, help="Define the coefficient of the adversary loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
+    parser.add_argument("-mp_norm", "--enalbe_mp_norm", action="store_true", help="Enable normalized MP")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
     parser.add_argument("-lr_d", type=float, default=1e-5, help="Learning rate for Discriminator")
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
@@ -161,7 +162,7 @@ if __name__ == "__main__":
             y_full.append(normalize(ts_fixed))         # use your normalize
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
-    X_full = MP_compute_recursive(y_full, m)
+    X_full = MP_compute_recursive(y_full, m, norm=args.enalbe_mp_norm)
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)

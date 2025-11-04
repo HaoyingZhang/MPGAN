@@ -33,7 +33,7 @@ def compute_matrix_profile_distance(real_series, fake_series, window_size=10):
 
     return total_dist + total_index_mismatch
 
-def MP_compute_recursive(ts_data, m):
+def MP_compute_recursive(ts_data, m, norm=False):
     """
     Compute MP from the time series from ts_data vector, return list dimension [n_ts, 2, n-m+1]
     """ 
@@ -42,11 +42,24 @@ def MP_compute_recursive(ts_data, m):
         ts = np.array(ts, dtype=np.float64)
 
         profile = stumpy.stump(ts, m)
-
-        mpd = profile[:, 0]
-        mpi = profile[:, 1].astype(int)
+        if norm:
+            mpd, mpi = normalized_MP(profile)
+        else:
+            mpd = profile[:, 0].astype(np.float32)
+            mpi = profile[:, 1].astype(int)
 
         mp_list.append([mpd, mpi])
     return np.array(mp_list, dtype=np.float32)
 
+def normalized_MP(mp):
+    mpd = mp[:, 0].astype(np.float32)
+    mpi = mp[:, 1].astype(int)
+    L = len(mpd)
+    dist_mean = np.mean(mpd)
+    dist_std  = np.std(mpd)
+    mpd_norm = (mpd - dist_mean) / dist_std
+
+    # --- normalize index channel to [-1, 1] ---
+    mpi_norm = (mpi / (L - 1)) * 2 - 1
+    return mpd_norm, mpi_norm
 
