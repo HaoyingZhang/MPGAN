@@ -294,6 +294,7 @@ if __name__ == "__main__":
             fake_data = G(train_tensor, z=z)
         else:
             fake_data = G(train_tensor)
+    fake_data = normalize(fake_data)
     test_file_names = [files[i] for i in train_set.indices]
     # Plot results
     if args.plot:
