@@ -104,6 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
     parser.add_argument("-pi_adv", type=float, default = 0.05, help="Define the coefficient of the adversary loss")
+    parser.add_argument("-pi_ts", type=float, default = 0.05, help="Define the coefficient of the original ts loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
     parser.add_argument("-mp_norm", "--enalbe_mp_norm", action="store_true", help="Enable normalized MP")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
@@ -274,6 +275,7 @@ if __name__ == "__main__":
                                                  activ_func=args.obj_func, 
                                                  time_limit=args.time,
                                                  pi_mp=args.pi_mp,
+                                                 pi_ts=args.pi_ts,
                                                  lr_G=args.lr_g,
                                                  latent=args.enable_latent,
                                                  coeff_dist = args.coeff_dist,
