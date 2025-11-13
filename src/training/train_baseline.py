@@ -13,6 +13,9 @@ import pandas as pd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
 from src.training.objectives import objective_function_unified
 
+def normalize(time_series : np.ndarray) -> np.ndarray:
+    return (time_series - time_series.min()) / (time_series.max() - time_series.min())
+
 ### --- WGAN-GP LOOP --- ###
 def train_wgan_gp(train_loader, G, D_net, device='cuda', checkpoint_path="tmp.pth", epoch=10,
                   mp_window_size=10, k_violation=1.0, alpha=0.05, objective_func=None,
@@ -317,7 +320,7 @@ def train_inverse(
     best_val = float('inf')
 
     best_g_loss = float('inf')
-    G_loss, MP_loss, TS_loss, VAL_loss = [], [], []
+    G_loss, MP_loss, TS_loss, VAL_loss = [], [], [], []
 
     start_time = time.time()
 
@@ -346,15 +349,16 @@ def train_inverse(
                 fake_for_g = G(mp_input_batch)
 
             fake_for_g = normalize(fake_for_g)
-            
-            
+
             fake_series_list = [fb.squeeze(-1) for fb in fake_for_g]
+
+            fake_series_tensor = torch.stack(fake_series_list, dim=0)
 
             # TS loss
             if pi_ts > 0:
-                ts_loss = ((fake_series_list - time_series_batch)**2).mean()
+                ts_loss = ((fake_series_tensor - time_series_batch)**2).mean()
             else:
-                ts_loss = torch.zero_
+                ts_loss = torch.tensor(0.0, device=device)
             # MP loss
             if pi_mp > 0:
                 mp_loss = objective_function_unified(
@@ -369,7 +373,7 @@ def train_inverse(
                     identity_activation=activ_func
                 )
             else:
-                mp_loss = torch.zero_
+                mp_loss = torch.tensor(0.0, device=device)
 
             g_loss = pi_mp * mp_loss + pi_ts * ts_loss
 
@@ -383,6 +387,7 @@ def train_inverse(
         
         G_loss.append(np.mean(epoch_g))
         MP_loss.append(np.mean(epoch_mp))
+        TS_loss.append(np.mean(epoch_ts))
         print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, ts={TS_loss[-1]:.4f}, G={G_loss[-1]:.4f}")
 
         # ----- validation -----
@@ -394,7 +399,8 @@ def train_inverse(
                 z = torch.randn(mp_in.size(0), 64, device=device) if latent and G.z_dim else None
                 fake = G(mp_in, z=z) if latent else G(mp_in)
                 fake_series_list = [f.squeeze(-1) for f in fake]
-                vloss = ((fake_series_list - _ts)**2).mean()
+                fake_series_tensor = torch.stack(fake_series_list, dim=0)
+                vloss = ((fake_series_tensor - _ts)**2).mean()
                 val_losses.append(vloss.item())
 
         val_mp = float(np.mean(val_losses)) if val_losses else float("inf")
