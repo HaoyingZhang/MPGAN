@@ -299,6 +299,7 @@ def train_inverse(
     time_limit=30,
     latent = False,
     pi_mp=0.05,
+    pi_ts=0.05,
     coeff_dist = 1.0,
     coeff_identity = 1.0,
     lr_G=2e-4             
@@ -316,7 +317,7 @@ def train_inverse(
     best_val = float('inf')
 
     best_g_loss = float('inf')
-    G_loss, MP_loss, VAL_loss = [], [], []
+    G_loss, MP_loss, TS_loss, VAL_loss = [], [], []
 
     start_time = time.time()
 
@@ -327,7 +328,7 @@ def train_inverse(
 
         G.train()
 
-        epoch_g, epoch_mp = [], []
+        epoch_g, epoch_mp, epoch_ts = [], [], []
 
         for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, n, 1]
             # Skip empty batches
@@ -344,25 +345,33 @@ def train_inverse(
             else:
                 fake_for_g = G(mp_input_batch)
 
-            # ts_loss = ((fake_g_in - time_series_batch)**2).mean()
-            # epoch_ts.append(ts_loss.item())
+            fake_for_g = normalize(fake_for_g)
             
-            # MP loss
+            
             fake_series_list = [fb.squeeze(-1) for fb in fake_for_g]
-            mp_loss = objective_function_unified(
-                x_list=fake_series_list,
-                mp_list=mp_input_batch,
-                m=mp_window_size,
-                coeff_dist=coeff_dist,
-                coeff_identity=coeff_identity,
-                k=k_violation,
-                device=device,
-                alpha=alpha,
-                identity_activation=activ_func
-            )
 
-            # g_loss = (pi_adv* g_adv_loss + pi_mp * mp_loss + 500 * ts_loss)
-            g_loss = pi_mp * mp_loss
+            # TS loss
+            if pi_ts > 0:
+                ts_loss = ((fake_series_list - time_series_batch)**2).mean()
+            else:
+                ts_loss = torch.zero_
+            # MP loss
+            if pi_mp > 0:
+                mp_loss = objective_function_unified(
+                    x_list=fake_series_list,
+                    mp_list=mp_input_batch,
+                    m=mp_window_size,
+                    coeff_dist=coeff_dist,
+                    coeff_identity=coeff_identity,
+                    k=k_violation,
+                    device=device,
+                    alpha=alpha,
+                    identity_activation=activ_func
+                )
+            else:
+                mp_loss = torch.zero_
+
+            g_loss = pi_mp * mp_loss + pi_ts * ts_loss
 
             optimizer_G.zero_grad()
             g_loss.backward()
@@ -370,10 +379,11 @@ def train_inverse(
 
             epoch_mp.append(mp_loss.item())
             epoch_g.append(g_loss.item())
+            epoch_ts.append(ts_loss.item())
         
         G_loss.append(np.mean(epoch_g))
         MP_loss.append(np.mean(epoch_mp))
-        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, G={G_loss[-1]:.4f}")
+        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, ts={TS_loss[-1]:.4f}, G={G_loss[-1]:.4f}")
 
         # ----- validation -----
         G.eval()
@@ -384,11 +394,7 @@ def train_inverse(
                 z = torch.randn(mp_in.size(0), 64, device=device) if latent and G.z_dim else None
                 fake = G(mp_in, z=z) if latent else G(mp_in)
                 fake_series_list = [f.squeeze(-1) for f in fake]
-                vloss = objective_function_unified(
-                    x_list=fake_series_list, mp_list=mp_in,
-                    m=mp_window_size, coeff_dist=coeff_dist, coeff_identity=coeff_identity,
-                    k=k_violation, device=device, alpha=alpha, identity_activation=activ_func
-                )
+                vloss = ((fake_series_list - _ts)**2).mean()
                 val_losses.append(vloss.item())
 
         val_mp = float(np.mean(val_losses)) if val_losses else float("inf")
@@ -409,4 +415,4 @@ def train_inverse(
             "train_mp": MP_loss, "train_G": G_loss, "val_mp": VAL_loss
         }).to_csv(os.path.join(checkpoint_path, "loss.csv"), index=False)
 
-    return G, G_loss, MP_loss, VAL_loss, best_val
+    return G, G_loss, MP_loss, TS_loss, VAL_loss, best_val
