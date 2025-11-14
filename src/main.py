@@ -112,6 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
     parser.add_argument("-coeff_index", type=float, default = 1.0, help="Define the coefficient of the index loss in MP")
     parser.add_argument("-time", type=int, default = None, help="Time limit" )
+    parser.add_argument("-inj_proj", "--enable_inj_proj", action="store_true", help="Using projection to expand features")
     args = parser.parse_args()
 
     if args.obj_func not in ["relu", "exp"]: 
@@ -164,6 +165,7 @@ if __name__ == "__main__":
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
     X_full = MP_compute_recursive(y_full, m, norm=args.enalbe_mp_norm)
+    print(X_full[0])
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
@@ -232,7 +234,8 @@ if __name__ == "__main__":
                 dilations=(1,2,4,8,16,32),
                 use_attention=True,
                 z_dim=64 if args.enable_latent else None,
-                y_dim=None         # or e.g. 10 if you have labels/classes
+                y_dim=None,         # or e.g. 10 if you have labels/classes
+                use_in_proj=args.enable_inj_proj
             )
 
     if args.d_model == "lstm":
@@ -263,7 +266,7 @@ if __name__ == "__main__":
     #                                             latent=args.enable_latent,
     #                                             coeff_dist = args.coeff_dist,
     #                                             coeff_identity=args.coeff_index)
-    G, G_loss, MP_loss, VAL_loss, best_val = train_inverse(train_loader,
+    G, G_loss, MP_loss, TS_loss, best_g_loss = train_inverse(train_loader,
                                                 val_loader, 
                                                  G, 
                                                  device=device, 
@@ -293,14 +296,14 @@ if __name__ == "__main__":
     with torch.no_grad():
         if args.enable_latent:
             z = torch.randn(train_tensor.size(0), 64, device='cpu') if G.z_dim else None
-            fake_data = G(train_tensor, z=z)
+            fake_data = G(test_tensor, z=z)
         else:
-            fake_data = G(train_tensor)
+            fake_data = G(test_tensor)
     fake_data = normalize(fake_data)
-    test_file_names = [files[i] for i in train_set.indices]
+    test_file_names = [files[i] for i in test_set.indices]
     # Plot results
     if args.plot:
-        plot_res(model_save_path, train_labels, fake_data, test_file_names, args.m)
+        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m)
     
     # 5. Evaluate Utility: Matrix Profile
     # utility_score = np.mean([compute_matrix_profile_distance(real_x.squeeze(), fake_x.squeeze()) for real_x, fake_x in zip(test_set, fake_data)])
@@ -315,7 +318,7 @@ if __name__ == "__main__":
     for i in range(5):
         plt.subplot(5, 1, i + 1)
         plt.plot(fake_data[i, :], label=f"Fake Sample {i}")
-        plt.plot(normalize(train_labels[i]), label=f"Real Sample {i}")
+        plt.plot(normalize(test_labels[i]), label=f"Real Sample {i}")
         plt.legend()
         plt.tight_layout()
 

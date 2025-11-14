@@ -51,7 +51,7 @@ def MP_compute_recursive(ts_data, m, norm=False):
         mp_list.append([mpd, mpi])
     return np.array(mp_list, dtype=np.float32)
 
-def normalized_MP(mp):
+def znormalized_MP(mp):
     mpd = mp[:, 0].astype(np.float32)
     mpi = mp[:, 1].astype(int)
     L = len(mpd)
@@ -63,3 +63,14 @@ def normalized_MP(mp):
     mpi_norm = (mpi / (L - 1)) * 2 - 1
     return mpd_norm, mpi_norm
 
+def normalized_MP(mp):
+    mpd = mp[:, 0].astype(np.float32)
+    mpi = mp[:, 1].astype(int)
+    
+    mpd_norm = normalize(mpd)
+    mpi_norm = normalize(mpi)
+    
+    return mpd_norm, mpi_norm
+
+def normalize(time_series : np.ndarray) -> np.ndarray:
+    return (time_series - time_series.min()) / (time_series.max() - time_series.min())

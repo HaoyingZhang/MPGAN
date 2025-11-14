@@ -156,6 +156,80 @@ def objective(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ck
 
     return val_score  # MINIMIZE this (lower MP distance is better)
 
+def objective_inverse(trial, train_loader, device="cuda", base_checkpoint_dir="optuna_ckpts", n=200, m=10):
+    # --- search space ---
+    # Constants
+    m = m
+    n = n
+    alpha = 0.5
+    k_violation    = trial.suggest_float("k_violation", 0.1, 1.0)
+    activ_func     = trial.suggest_categorical("activ_func", ["relu", "exp"])
+    latent         = trial.suggest_categorical("latent", [False, True])
+
+    pi_ts     = trial.suggest_float("pi_ts", 0.1, 5.0, log=True)
+
+    lr_G           = trial.suggest_float("lr_G", 1e-5, 5e-4, log=True)
+
+    # You can also tune epoch/time_limit to speed search; keep modest for trials
+    epoch          = trial.suggest_int("epoch", 5, 20)
+    time_limit     = trial.suggest_int("time_limit", 15, 60)
+
+    # --- per-trial checkpoint dir (clean slate each time) ---
+    ckpt_dir = os.path.join(base_checkpoint_dir, f"trial_{trial.number}")
+    if os.path.exists(ckpt_dir):
+        shutil.rmtree(ckpt_dir)
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    set_global_seed(2025 + trial.number)
+
+    # (re)build fresh models per trial
+    G = build_models(n=args.n, m=args.m, latent=latent)
+
+    # --- train ---
+    try:
+        G, G_loss, MP_loss, TS_loss, best_g_loss = train_inverse(train_loader,
+                                                [], 
+                                                 G, 
+                                                 device=device, 
+                                                 checkpoint_path=model_save_path, 
+                                                 epoch=train_epoch, 
+                                                 mp_window_size=m, 
+                                                 k_violation=k_violation, 
+                                                 alpha=alpha, 
+                                                 activ_func=activ_func, 
+                                                 time_limit=time_limit,
+                                                 pi_mp=0,
+                                                 pi_ts=pi_ts,
+                                                 lr_G=lr_g,
+                                                 latent=latent,
+                                                 coeff_dist = 0,
+                                                 coeff_identity=0)
+    except RuntimeError as e:
+        # e.g., OOM → tell Optuna this config is bad
+        raise optuna.exceptions.TrialPruned() from e
+
+    # --- objective: minimize mp loss ---
+    best_G = build_models(n, m, latent=latent)[0]  # fresh G
+    best_G.load_state_dict(torch.load(os.path.join(ckpt_dir, "best_model.pth"), map_location=device))
+    best_G.to(device)
+    val_score = eval_generator_mp(
+        best_G, train_loader,
+        device="cpu",
+        d_model=d_model,
+        latent=latent,
+        m_eval=10,          # keep fixed across all trials
+        alpha_eval=0.5,
+        k_eval=1.0,
+        activ_eval="relu",
+        mp_m=m
+    )
+    # report & (optional) prune based on intermediate value
+    trial.report(val_score, step=epoch)
+    if trial.should_prune():
+        raise optuna.exceptions.TrialPruned()
+
+    return val_score  # MINIMIZE this (lower MP distance is better)
+
 def run_optuna(train_loader, n, m, n_trials=30, device="cuda"):
     # Sampler/Pruner choices you can tweak
     sampler = optuna.samplers.TPESampler(seed=123)
@@ -165,11 +239,11 @@ def run_optuna(train_loader, n, m, n_trials=30, device="cuda"):
         direction="minimize",
         sampler=sampler,
         pruner=pruner,
-        study_name=f"gan_tuning_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        study_name=f"inverse_tuning_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
 
     study.optimize(
-        lambda t: objective(t, train_loader=train_loader, device=device, n=n, m=m),
+        lambda t: objective_inverse(t, train_loader=train_loader, device=device, n=n, m=m),
         n_trials=n_trials,
         gc_after_trial=True,
         show_progress_bar=True
@@ -208,7 +282,7 @@ if __name__ == "__main__":
             y_full.append(normalize(ts))       # use your normalize
     else:
         if args.category == "ecg":
-            data_dir = "data/ecg/ecg_long"
+            data_dir = "data/ecg/long"
             files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.npy")))
         elif args.category == "energy":
             data_dir = "data/energy/original"
@@ -233,7 +307,7 @@ if __name__ == "__main__":
             y_full.append(normalize(ts_fixed))         # use your normalize
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
-    X_full = MP_compute_recursive(y_full, m)
+    X_full = MP_compute_recursive(y_full, m, True)
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)

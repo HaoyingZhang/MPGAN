@@ -290,7 +290,7 @@ def train_gan(
 
 def train_inverse(
     train_loader,
-    val_loader,
+    val_loader,   # kept for compatibility but unused
     G,
     device='cuda',
     checkpoint_path="tmp.pth",
@@ -300,27 +300,25 @@ def train_inverse(
     alpha=0.5,
     activ_func="relu",
     time_limit=30,
-    latent = False,
+    latent=False,
     pi_mp=0.05,
     pi_ts=0.05,
-    coeff_dist = 1.0,
-    coeff_identity = 1.0,
-    lr_G=2e-4             
+    coeff_dist=1.0,
+    coeff_identity=1.0,
+    lr_G=2e-4,
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
-    # Move models once
-    G      = G.to(device)
+    # Move model once
+    G = G.to(device)
 
     optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
-    # criterion   = nn.BCELoss()
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_G, mode='min', factor=0.5)
-
-    best_val = float('inf')
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer_G, mode='min', factor=0.5
+    )
 
     best_g_loss = float('inf')
-    G_loss, MP_loss, TS_loss, VAL_loss = [], [], [], []
+    G_loss, MP_loss, TS_loss = [], [], []
 
     start_time = time.time()
 
@@ -330,35 +328,38 @@ def train_inverse(
             break
 
         G.train()
-
         epoch_g, epoch_mp, epoch_ts = [], [], []
 
-        for mp_input_batch, time_series_batch in train_loader: # real_batch.shape = [10, n, 1]
+        for mp_input_batch, time_series_batch in train_loader:
             # Skip empty batches
             if mp_input_batch.size(0) == 0:
                 continue
 
-            # --- Generator Train ---#
-            mp_input_batch = mp_input_batch.to(device)
-            # optimizer_G.zero_grad()
+            # Move to device
+            mp_input_batch    = mp_input_batch.to(device)
+            time_series_batch = time_series_batch.to(device)
 
+            # --- Generator forward --- #
             if latent:
-                z = torch.randn(mp_input_batch.size(0), 64, device=device) if G.z_dim else None
-                fake_for_g = G(mp_input_batch, z=z)     # fresh graph
+                z = torch.randn(mp_input_batch.size(0), 64, device=device) if getattr(G, "z_dim", None) else None
+                fake_for_g = G(mp_input_batch, z=z)
             else:
                 fake_for_g = G(mp_input_batch)
 
             fake_for_g = normalize(fake_for_g)
 
+            # list for MP loss
             fake_series_list = [fb.squeeze(-1) for fb in fake_for_g]
-
+            # tensor for TS loss
             fake_series_tensor = torch.stack(fake_series_list, dim=0)
+            real_ts_tensor = time_series_batch.squeeze(-1)
 
             # TS loss
             if pi_ts > 0:
-                ts_loss = ((fake_series_tensor - time_series_batch)**2).mean()
+                ts_loss = ((fake_series_tensor - real_ts_tensor) ** 2).mean()
             else:
                 ts_loss = torch.tensor(0.0, device=device)
+
             # MP loss
             if pi_mp > 0:
                 mp_loss = objective_function_unified(
@@ -370,7 +371,7 @@ def train_inverse(
                     k=k_violation,
                     device=device,
                     alpha=alpha,
-                    identity_activation=activ_func
+                    identity_activation=activ_func,
                 )
             else:
                 mp_loss = torch.tensor(0.0, device=device)
@@ -384,41 +385,33 @@ def train_inverse(
             epoch_mp.append(mp_loss.item())
             epoch_g.append(g_loss.item())
             epoch_ts.append(ts_loss.item())
-        
-        G_loss.append(np.mean(epoch_g))
-        MP_loss.append(np.mean(epoch_mp))
-        TS_loss.append(np.mean(epoch_ts))
-        print(f"Epoch {ep+1}: mp={MP_loss[-1]:.4f}, ts={TS_loss[-1]:.4f}, G={G_loss[-1]:.4f}")
 
-        # ----- validation -----
-        G.eval()
-        with torch.no_grad():
-            val_losses = []
-            for mp_in, _ts in val_loader:
-                mp_in = mp_in.to(device)
-                z = torch.randn(mp_in.size(0), 64, device=device) if latent and G.z_dim else None
-                fake = G(mp_in, z=z) if latent else G(mp_in)
-                fake_series_list = [f.squeeze(-1) for f in fake]
-                fake_series_tensor = torch.stack(fake_series_list, dim=0)
-                vloss = ((fake_series_tensor - _ts)**2).mean()
-                val_losses.append(vloss.item())
+        # per-epoch stats
+        G_loss.append(float(np.mean(epoch_g)) if epoch_g else float("nan"))
+        MP_loss.append(float(np.mean(epoch_mp)) if epoch_mp else float("nan"))
+        TS_loss.append(float(np.mean(epoch_ts)) if epoch_ts else float("nan"))
 
-        val_mp = float(np.mean(val_losses)) if val_losses else float("inf")
-        VAL_loss.append(val_mp)
-        scheduler.step(val_mp) 
+        print(
+            f"Epoch {ep+1}: "
+            f"mp={MP_loss[-1]:.4f}, "
+            f"ts={TS_loss[-1]:.4f}, "
+            f"G={G_loss[-1]:.4f}"
+        )
 
-        if val_mp < best_val:
-            best_val = val_mp
+        # Step scheduler on training G loss
+        scheduler.step(G_loss[-1])
+
+        # ✅ checkpoint best G according to G_loss
+        if G_loss[-1] < best_g_loss:
+            best_g_loss = G_loss[-1]
             torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
-            print(f"✅ New best (val) at epoch {ep+1}: {best_val:.4f}")
+            print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
 
-        # # checkpoint best G
-        # if G_loss[-1] < best_g_loss:
-        #     best_g_loss = G_loss[-1]
-        #     torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
-        #     print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
+        # log losses
         pd.DataFrame({
-            "train_mp": MP_loss, "train_G": G_loss, "val_mp": VAL_loss
+            "train_mp": MP_loss,
+            "train_ts": TS_loss,
+            "train_G": G_loss,
         }).to_csv(os.path.join(checkpoint_path, "loss.csv"), index=False)
 
-    return G, G_loss, MP_loss, TS_loss, VAL_loss, best_val
+    return G, G_loss, MP_loss, TS_loss, best_g_loss
