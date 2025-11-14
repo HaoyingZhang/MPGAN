@@ -165,7 +165,6 @@ if __name__ == "__main__":
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
     X_full = MP_compute_recursive(y_full, m, norm=args.enalbe_mp_norm)
-    print(X_full[0])
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
@@ -295,7 +294,7 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         if args.enable_latent:
-            z = torch.randn(train_tensor.size(0), 64, device='cpu') if G.z_dim else None
+            z = torch.randn(test_tensor.size(0), 64, device='cpu') if G.z_dim else None
             fake_data = G(test_tensor, z=z)
         else:
             fake_data = G(test_tensor)

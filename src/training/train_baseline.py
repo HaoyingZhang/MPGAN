@@ -312,10 +312,13 @@ def train_inverse(
     # Move model once
     G = G.to(device)
 
-    optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
+    # optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
+    optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, betas=(0.5, 0.9))
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer_G, mode='min', factor=0.5
     )
+    loss_fn_ts = nn.SmoothL1Loss(beta=0.1)
 
     best_g_loss = float('inf')
     G_loss, MP_loss, TS_loss = [], [], []
@@ -346,17 +349,19 @@ def train_inverse(
             else:
                 fake_for_g = G(mp_input_batch)
 
-            fake_for_g = normalize(fake_for_g)
+            # fake_for_g = normalize(fake_for_g)
 
             # list for MP loss
-            fake_series_list = [fb.squeeze(-1) for fb in fake_for_g]
-            # tensor for TS loss
-            fake_series_tensor = torch.stack(fake_series_list, dim=0)
+            fake_series_tensor = fake_for_g  # already [B,n]
+            fake_series_list = fake_for_g.unbind(0)
+
             real_ts_tensor = time_series_batch.squeeze(-1)
 
             # TS loss
             if pi_ts > 0:
-                ts_loss = ((fake_series_tensor - real_ts_tensor) ** 2).mean()
+                # ts_loss = ((fake_series_tensor - real_ts_tensor) ** 2).mean()
+                ts_loss = loss_fn_ts(fake_series_tensor, real_ts_tensor)
+
             else:
                 ts_loss = torch.tensor(0.0, device=device)
 
