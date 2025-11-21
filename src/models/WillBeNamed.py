@@ -209,7 +209,7 @@ class Generator(nn.Module):
 
         if h.size(-1) != self.n:
             h = F.interpolate(h, size=self.n, mode='linear', align_corners=False)
-        # h = self.drop(h)
+        h = self.drop(h)
 
         y_hat = self.head(h).squeeze(1)      # [B,n]
         y_hat = torch.sigmoid(y_hat)       

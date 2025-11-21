@@ -288,6 +288,34 @@ def train_gan(
         loss_df.to_csv(os.path.join(checkpoint_path,"loss.csv"), index=False)
     return G, D_net, D_loss, G_loss, g_adv_loss, mp_loss
 
+class PearsonR2Loss(nn.Module):
+    """
+    Loss = 1 - r^2  
+    where r = Pearson correlation between y_pred and y_true.
+    Minimizing this is equivalent to maximizing correlation^2.
+    """
+    def __init__(self, eps=1e-8):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, y_pred, y_true):
+        # Flatten
+        y_pred = y_pred.view(-1)
+        y_true = y_true.view(-1)
+
+        # Center
+        vx = y_pred - torch.mean(y_pred)
+        vy = y_true - torch.mean(y_true)
+
+        # Pearson correlation
+        r_num = torch.sum(vx * vy)
+        r_den = torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)) + self.eps
+        r = r_num / r_den
+
+        # Loss = 1 - r^2 (so model maximizes correlation)
+        loss = 1.0 - r**2
+        return loss
+
 def train_inverse(
     train_loader,
     val_loader,   # kept for compatibility but unused
@@ -318,8 +346,9 @@ def train_inverse(
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer_G, mode='min', factor=0.5
     )
-    loss_fn_ts = nn.SmoothL1Loss(beta=0.1)
-
+    # loss_fn_ts = nn.SmoothL1Loss(beta=0.1)
+    loss_fn_ts = PearsonR2Loss()
+    
     best_g_loss = float('inf')
     G_loss, MP_loss, TS_loss = [], [], []
 
