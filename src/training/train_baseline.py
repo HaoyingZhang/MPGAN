@@ -372,6 +372,7 @@ def train_inverse(
     coeff_dist=1.0,
     coeff_identity=1.0,
     lr_G=2e-4,
+    mp_norm=True
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
@@ -449,6 +450,7 @@ def train_inverse(
                     x_list=fake_series_list,
                     mp_batch=mp_input_batch,
                     m=mp_window_size,
+                    norm=mp_norm,
                     coeff_dist=coeff_dist,
                     coeff_identity=coeff_identity,
                     k=k_violation,

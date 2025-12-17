@@ -10,7 +10,7 @@ def znormalized(x, eps=1e-8):
     return (x - mean) / std
 
 
-def compute_znormalized_distance_matrix(x, m):
+def compute_distance_matrix(x, m, normalize=True):
     """
     Computes a full pairwise z-normalized Euclidean distance matrix between all subsequences of length m from x.
     Args:
@@ -22,7 +22,8 @@ def compute_znormalized_distance_matrix(x, m):
     T = x.shape[0]
     n_subseq = T - m + 1
     subsequences = x.unfold(0, m, 1)  # shape: (n_subseq, m)
-    subsequences = znormalized(subsequences)
+    if normalize:
+        subsequences = znormalized(subsequences)
 
     # Compute pairwise Euclidean distances
     diff = subsequences.unsqueeze(1) - subsequences.unsqueeze(0)  # (n_subseq, n_subseq, m)
@@ -139,6 +140,7 @@ def objective_function_unified(
     x_list,
     mp_batch,
     m,
+    norm: bool = True,
     coeff_dist: float = 1.0,
     coeff_identity: float = 1.0,
     device: str = "cuda",
@@ -175,7 +177,7 @@ def objective_function_unified(
         mpi = mp_batch[b, 1].long().to(device)  # (L,)
 
         # Distance matrix
-        D = compute_znormalized_distance_matrix(x, m)  # (L, L)
+        D = compute_distance_matrix(x, m, norm)  # (L, L)
 
         # --- Distance loss ---
         dist_est = D[torch.arange(L, device=device), mpi]

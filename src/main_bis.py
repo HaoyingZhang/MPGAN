@@ -319,7 +319,8 @@ if __name__ == "__main__":
                                                  lr_G=args.lr_g,
                                                  latent=args.enable_latent,
                                                  coeff_dist = args.coeff_dist,
-                                                 coeff_identity=args.coeff_index)
+                                                 coeff_identity=args.coeff_index,
+                                                 mp_norm=args.znorm_mp)
 
     G.load_state_dict(torch.load(model_save_path+"best_model.pth"))
     G = G.cpu()
