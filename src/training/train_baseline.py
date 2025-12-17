@@ -320,6 +320,38 @@ class PearsonR2Loss(nn.Module):
         loss = 1.0 - r ** 2        # [B]
         return loss.mean()         # scalar
 
+
+class TemporalGradientLoss(nn.Module):
+    """
+    Penalizes mismatch in first-order temporal differences
+    between generated and target time series.
+    """
+
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, x, y):
+        """
+        x, y: shape [B, T] or [B, T, 1]
+        """
+        if x.dim() == 3:
+            x = x.squeeze(-1)
+        if y.dim() == 3:
+            y = y.squeeze(-1)
+
+        dx = x[:, 1:] - x[:, :-1]
+        dy = y[:, 1:] - y[:, :-1]
+
+        loss = (dx - dy) ** 2
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss
+
 def train_inverse(
     train_loader,
     val_loader,   # kept for compatibility but unused
@@ -335,6 +367,7 @@ def train_inverse(
     latent=False,
     pi_mse=0.5,
     pi_pcc=0.5,
+    pi_grad=0.05,
     pi_mp=0.05,
     coeff_dist=1.0,
     coeff_identity=1.0,
@@ -352,10 +385,11 @@ def train_inverse(
         optimizer_G, mode='min', factor=0.5
     )
     # loss_fn_ts = nn.SmoothL1Loss(beta=0.1)
-    loss_fn_ts = PearsonR2Loss()
+    loss_fn_pcc = PearsonR2Loss()
+    loss_fn_grad = TemporalGradientLoss()
     
     best_g_loss = float('inf')
-    G_loss, MP_loss, TS_loss, MSE_loss, PCC_loss = [], [], [], [], []
+    G_loss, MP_loss, TS_loss, MSE_loss, PCC_loss, GRAD_loss = [], [], [], [], [], []
 
     start_time = time.time()
 
@@ -365,7 +399,7 @@ def train_inverse(
             break
 
         G.train()
-        epoch_g, epoch_mp, epoch_ts, epoch_mse, epoch_pcc = [], [], [], [], []
+        epoch_g, epoch_mp, epoch_ts, epoch_mse, epoch_pcc, epoch_grad = [], [], [], [], [], []
 
         for mp_input_batch, time_series_batch in train_loader:
             # print(time_series_batch.shape)
@@ -398,11 +432,15 @@ def train_inverse(
             else:
                 ts_mse = torch.tensor(0.0, device=device)
             if pi_pcc > 0:
-                ts_pcc = loss_fn_ts(fake_series_tensor, time_series_batch)
+                ts_pcc = loss_fn_pcc(fake_series_tensor, time_series_batch)
             else:
                 ts_pcc = torch.tensor(0.0, device=device)
+            if pi_grad > 0:
+                ts_grad = loss_fn_grad(fake_series_tensor, time_series_batch)
+            else:
+                ts_grad = torch.tensor(0.0, device=device)
 
-            ts_loss = pi_mse * ts_mse + pi_pcc * ts_pcc
+            ts_loss = pi_mse * ts_mse + pi_pcc * ts_pcc + pi_grad * ts_grad
             
 
             # MP loss
@@ -432,6 +470,7 @@ def train_inverse(
             epoch_ts.append(ts_loss.item())
             epoch_pcc.append(ts_pcc.item())
             epoch_mse.append(ts_mse.item())
+            epoch_grad.append(ts_grad.item())
 
         # per-epoch stats
         G_loss.append(float(np.mean(epoch_g)) if epoch_g else float("nan"))
@@ -439,6 +478,7 @@ def train_inverse(
         TS_loss.append(float(np.mean(epoch_ts)) if epoch_ts else float("nan"))
         MSE_loss.append(float(np.mean(epoch_mse)) if epoch_mse else float("nan"))
         PCC_loss.append(float(np.mean(epoch_pcc)) if epoch_pcc else float("nan"))
+        GRAD_loss.append(float(np.mean(epoch_grad)) if epoch_grad else float("nan"))
 
         print(
             f"Epoch {ep+1}: "
