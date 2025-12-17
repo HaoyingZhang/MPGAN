@@ -402,7 +402,7 @@ def train_inverse(
         epoch_g, epoch_mp, epoch_ts, epoch_mse, epoch_pcc, epoch_grad = [], [], [], [], [], []
 
         for mp_input_batch, time_series_batch in train_loader:
-            # print(time_series_batch.shape)
+            # print(mp_input_batch.shape)
             # Skip empty batches
             if mp_input_batch.size(0) == 0:
                 continue
@@ -447,7 +447,7 @@ def train_inverse(
             if pi_mp > 0:
                 mp_loss = objective_function_unified(
                     x_list=fake_series_list,
-                    mp_list=mp_input_batch,
+                    mp_batch=mp_input_batch,
                     m=mp_window_size,
                     coeff_dist=coeff_dist,
                     coeff_identity=coeff_identity,

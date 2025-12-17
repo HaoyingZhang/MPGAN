@@ -137,7 +137,7 @@ def objective_function_exponential_pytorch (x_list, mp_list, m, coeff_dist=1.0, 
 
 def objective_function_unified(
     x_list,
-    mp_list,
+    mp_batch,
     m,
     coeff_dist: float = 1.0,
     coeff_identity: float = 1.0,
@@ -147,71 +147,63 @@ def objective_function_unified(
     k: float = 1.0                      # if 0<k<1: keep top ceil(k*(n-1)) per row; else use all
 ):
     """
-    Differentiable PyTorch matrix-profile objective with flexible identity penalty.
-
-    - identity_activation="relu":     penalty = max(violation, 0)
-    - identity_activation="exp":      penalty = exp(max(violation,0)) - 1  (via torch.expm1)
-
-    - alpha: ignore matches within a diagonal band of width floor(alpha*m)
-    - k in (0,1): per row keep top ceil(k*(n-1)) positive violations only; otherwise sum all
+    Differentiable MP objective.
 
     Shapes:
-      x:  (T,)
-      mp: (2n,), first n are MPD, last n are MPI (ints), where n = T - m + 1
+      x_list[b]: (T,)
+      mp_batch:  (B, 2, L)
+        - mp_batch[:, 0, :] = MP distances
+        - mp_batch[:, 1, :] = MP indices
+      L = T - m + 1
     """
-    assert len(x_list) == len(mp_list)
-    total_loss = 0
+    B = len(x_list)
+    assert mp_batch.shape[0] == B, "Batch size mismatch"
 
-    # For k logic we need n; validate shapes using the first pair
-    mp0 = mp_list[0]
-    assert mp0.shape[0] == 2 * (x_list[0].shape[0] - m + 1), "mp shape mismatch with x and m"
+    T = x_list[0].shape[0]
+    L = T - m + 1
+    assert mp_batch.shape[2] == L, "MP length mismatch with x and m"
 
-    # Precompute band size from alpha (if any)
-    band_size = None
-    if alpha is not None and alpha > 0:
-        band_size = int(alpha * m)
+    total_loss = 0.0
 
+    # Precompute band size
+    band_size = int(alpha * m) if (alpha is not None and alpha > 0) else None
     use_topk = (k is not None) and (0.0 < k < 1.0)
 
-    for x, mp in zip(x_list, mp_list):
-        x = x.to(device)
-        mp = mp.to(device)
+    for b in range(B):
+        x = x_list[b].to(device)           # (T,)
+        mpd = mp_batch[b, 0].to(device)    # (L,)
+        mpi = mp_batch[b, 1].long().to(device)  # (L,)
 
-        L = (mp.shape[0] // 2)
-        D = compute_znormalized_distance_matrix(x, m)  # (n,n)
+        # Distance matrix
+        D = compute_znormalized_distance_matrix(x, m)  # (L, L)
 
-        mpd = mp[:L]                 # ground-truth distances (float)
-        mpi = mp[L:].long()          # ground-truth indices (int)
-
-        # --- Distance loss: squared error on matched pairs ---
+        # --- Distance loss ---
         dist_est = D[torch.arange(L, device=device), mpi]
         distance_loss = torch.sum((mpd - dist_est) ** 2)
 
-        # --- Identity loss: penalize any j where D[i,j] < D[i,mpi[i]] (i.e., violation > 0) ---
-        violations = dist_est.unsqueeze(1) - D  # (L,L) >0 means identity is violated
+        # --- Identity loss ---
+        violations = dist_est.unsqueeze(1) - D  # (L, L)
 
-        # Exclude diagonal and (optionally) a ±alpha*m band efficiently
+        # Mask diagonal / band
         if band_size is not None:
-            i = torch.arange(L, device=device).unsqueeze(1)  # (n,1)
-            j = torch.arange(L, device=device).unsqueeze(0)  # (1,n)
-            band_mask = (j - i).abs() <= band_size          # True where inside band
+            i = torch.arange(L, device=device).unsqueeze(1)
+            j = torch.arange(L, device=device).unsqueeze(0)
+            band_mask = (j - i).abs() <= band_size
         else:
-            band_mask = torch.eye(L, dtype=torch.bool, device=device)  # only diagonal
+            band_mask = torch.eye(L, dtype=torch.bool, device=device)
 
-        # Keep only positive violations outside the mask
         positive = torch.clamp(violations, min=0.0)
         positive = positive.masked_fill(band_mask, 0.0)
 
-        # Activation choice
+        # Activation
         if identity_activation.lower() == "relu":
             contrib = positive
         elif identity_activation.lower() == "exp":
-            # exp(x)-1 but numerically stable and with meaningful gradient at 0
             contrib = torch.expm1(positive)
         else:
             raise ValueError("identity_activation must be 'relu' or 'exp'")
 
-        # Top-k per row (after activation), or sum all
+        # Top-k
         if use_topk:
             k_count = max(1, min(L - 1, math.ceil(k * (L - 1))))
             topk_vals, _ = torch.topk(contrib, k=k_count, dim=1)
@@ -219,6 +211,6 @@ def objective_function_unified(
         else:
             identity_loss = contrib.sum()
 
-        total_loss = total_loss + (coeff_dist * distance_loss + coeff_identity * identity_loss)
+        total_loss += coeff_dist * distance_loss + coeff_identity * identity_loss
 
-    return total_loss/len(x_list)
+    return total_loss / B
