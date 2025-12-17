@@ -33,7 +33,7 @@ def pearson_correlation(x, y):
         return np.NaN
     return stats.pearsonr(x, y).statistic ** 2
 
-def plot_res(folder_name, real_data, fake_data, name_list, m):
+def plot_res(folder_name, real_data, fake_data, name_list, m, mp_norm):
     original_color = 'tab:blue'
     fake_color = 'tab:red'
     for real_ts, fake_ts, file_name in zip(real_data, fake_data, name_list):
@@ -50,8 +50,8 @@ def plot_res(folder_name, real_data, fake_data, name_list, m):
         with open(os.path.join(folder_name, file_name_short, "results.json"), "w") as f:
             json.dump(res_json, f, indent=4)
 
-        mp_real = stumpy.stump(real_ts, m)
-        mp_fake = stumpy.stump(fake_ts, m)
+        mp_real = stumpy.stump(real_ts, m, normalize=mp_norm)
+        mp_fake = stumpy.stump(fake_ts, m, normalize=mp_norm)
         mp_real_clean = mp_real[:, [0, 1]].astype(np.float32)
         mp_real_clean = np.nan_to_num(mp_real_clean, nan=0.0, posinf=0.0, neginf=0.0)
         mp_fake_clean = mp_fake[:, [0, 1]].astype(np.float32)
@@ -62,6 +62,7 @@ def plot_res(folder_name, real_data, fake_data, name_list, m):
         # Plot the time series
         axs[0, 0].plot(real_ts, label='Original TS', color=original_color)
         axs[0, 0].plot(fake_ts, label='Fake TS', color=fake_color)
+        axs[0, 0].set_title(f"Pearson Corr: {round(pearson_correlation(real_ts, np.array(fake_ts), 2))}", fontsize=12)
         axs[0, 0].legend(fontsize=10)
 
         # Plot the Matrix Profile distances
@@ -335,7 +336,7 @@ if __name__ == "__main__":
     test_file_names = [files_test[i] for i in test_set.indices]
     # Plot results
     if args.plot:
-        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m)
+        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.enable_mp_norm)
     
     # 5. Evaluate Utility: Matrix Profile
     # utility_score = np.mean([compute_matrix_profile_distance(real_x.squeeze(), fake_x.squeeze()) for real_x, fake_x in zip(test_set, fake_data)])
