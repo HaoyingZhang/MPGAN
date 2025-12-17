@@ -109,7 +109,8 @@ class Generator(nn.Module):
         film_hidden: int = 128,
         p_drop=0.1,
         attn_drop=0.1,
-        proj_drop=0.1
+        proj_drop=0.1,
+        dropout=True
     ):
         super().__init__()
         assert num_blocks == len(dilations), "num_blocks must match length of dilations"
@@ -143,6 +144,7 @@ class Generator(nn.Module):
         self.mid_act  = nn.GELU()
         self.head     = nn.Conv1d(block_channels, 1, kernel_size=3, padding=1)
         self.drop     = nn.Dropout(0.1)
+        self.do       = dropout
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -157,18 +159,20 @@ class Generator(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def _prep_input(self, x):
-        if x.dim() == 3 and x.size(-1) == 2:          # [B,L,2]
-            x = x.permute(0, 2, 1)                    # -> [B,2,L]
-        elif x.dim() == 2 and x.size(1) == 2 * self.L:
-            x = x.view(x.size(0), 2, self.L)          # -> [B,2,L]
-        elif x.dim() == 3 and x.size(1) == 2:         # already [B,2,L]
-            pass
+        if x.dim() == 2:
+            x = x.unsqueeze(1)                  # -> [B, 1, L]
+
+        elif x.dim() == 3:
+            x = x.permute(0, 2, 1)              # -> [B, C, L]
+
         else:
             raise ValueError(
-                f"Unexpected MP input shape {tuple(x.shape)}. "
-                f"Expected [B,L,2] or [B, 2*L] or [B,2,L] with L={self.L}."
+                f"Unexpected input shape {tuple(x.shape)}. "
+                f"Expected [B,L], [B,1,L], [B,L,C], or [B,C,L]."
             )
+
         return x
+
 
     def _build_condition(self, z=None, y=None):
         conds = []
@@ -188,7 +192,7 @@ class Generator(nn.Module):
 
     def forward(self, mp_input, z=None, y=None):
         B = mp_input.size(0)
-        x = self._prep_input(mp_input)       # [B, mp_channels, L]
+        x = self._prep_input(mp_input)       # [B, L, channels]
         h = self.in_proj(x)                  # either Conv1d or Identity
 
         gamma = beta = None
@@ -209,7 +213,9 @@ class Generator(nn.Module):
 
         if h.size(-1) != self.n:
             h = F.interpolate(h, size=self.n, mode='linear', align_corners=False)
-        h = self.drop(h)
+        if self.do:
+            print("drop out activated")
+            h = self.drop(h)
 
         y_hat = self.head(h).squeeze(1)      # [B,n]
         y_hat = torch.sigmoid(y_hat)       

@@ -290,31 +290,35 @@ def train_gan(
 
 class PearsonR2Loss(nn.Module):
     """
-    Loss = 1 - r^2  
-    where r = Pearson correlation between y_pred and y_true.
-    Minimizing this is equivalent to maximizing correlation^2.
+    Mean over batch of (1 - Pearson_r^2),
+    computed independently per time series.
     """
     def __init__(self, eps=1e-8):
         super().__init__()
         self.eps = eps
 
     def forward(self, y_pred, y_true):
-        # Flatten
-        y_pred = y_pred.view(-1)
-        y_true = y_true.view(-1)
+        """
+        y_pred, y_true: [B, n]
+        """
+        assert y_pred.shape == y_true.shape
+        B, n = y_pred.shape
 
-        # Center
-        vx = y_pred - torch.mean(y_pred)
-        vy = y_true - torch.mean(y_true)
+        # Center per sample
+        vx = y_pred - y_pred.mean(dim=1, keepdim=True)
+        vy = y_true - y_true.mean(dim=1, keepdim=True)
 
-        # Pearson correlation
-        r_num = torch.sum(vx * vy)
-        r_den = torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)) + self.eps
+        # Pearson per sample
+        r_num = torch.sum(vx * vy, dim=1)
+        r_den = (
+            torch.sqrt(torch.sum(vx ** 2, dim=1)) *
+            torch.sqrt(torch.sum(vy ** 2, dim=1)) +
+            self.eps
+        )
         r = r_num / r_den
 
-        # Loss = 1 - r^2 (so model maximizes correlation)
-        loss = 1.0 - r**2
-        return loss
+        loss = 1.0 - r ** 2        # [B]
+        return loss.mean()         # scalar
 
 def train_inverse(
     train_loader,
@@ -363,6 +367,7 @@ def train_inverse(
         epoch_g, epoch_mp, epoch_ts = [], [], []
 
         for mp_input_batch, time_series_batch in train_loader:
+            # print(time_series_batch.shape)
             # Skip empty batches
             if mp_input_batch.size(0) == 0:
                 continue
@@ -381,15 +386,15 @@ def train_inverse(
             # fake_for_g = normalize(fake_for_g)
 
             # list for MP loss
-            fake_series_tensor = fake_for_g  # already [B,n]
+            fake_series_tensor = fake_for_g  
             fake_series_list = fake_for_g.unbind(0)
 
-            real_ts_tensor = time_series_batch.squeeze(-1)
+            # real_ts_tensor = time_series_batch.squeeze(-1)
 
             # TS loss
             if pi_ts > 0:
                 # ts_loss = ((fake_series_tensor - real_ts_tensor) ** 2).mean()
-                ts_loss = loss_fn_ts(fake_series_tensor, real_ts_tensor)
+                ts_loss = loss_fn_ts(fake_series_tensor, time_series_batch)
 
             else:
                 ts_loss = torch.tensor(0.0, device=device)

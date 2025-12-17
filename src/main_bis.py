@@ -126,7 +126,8 @@ if __name__ == "__main__":
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
     parser.add_argument("-pi_adv", type=float, default = 0.05, help="Define the coefficient of the adversary loss")
-    parser.add_argument("-pi_ts", type=float, default = 0.05, help="Define the coefficient of the original ts loss")
+    parser.add_argument("-pi_mse", type=float, default = 0.05, help="Define the coefficient of the original MSE loss")
+    parser.add_argument("-pi_pcc", type=float, default = 0.05, help="Define the coefficient of the original PCC loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
     parser.add_argument("-mp_norm", "--enalbe_mp_norm", action="store_true", help="Enable normalized MP")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
@@ -137,6 +138,7 @@ if __name__ == "__main__":
     parser.add_argument("-inj_proj", "--enable_inj_proj", action="store_true", help="Using projection to expand features")
     parser.add_argument("-do", "--enable_drop_out", action="store_true", help="Enable the drop out layer")
     parser.add_argument("-mpd_only", "--enable_mpd_only", action="store_true", help="Enable to use MPD only")
+    parser.add_argument("-znorm", "--znorm_mp", action="store_true", help="Using z-normalized Euclidean distance in MP computing")
     args = parser.parse_args()
 
     if args.obj_func not in ["relu", "exp"]: 
@@ -164,9 +166,9 @@ if __name__ == "__main__":
             y_train_full.append(normalize(ts))       # use your normalize
     else:
         if args.category == "ecg":
-            data_dir = "data/ecg/ecg_train"
+            data_dir = "data/ecg_train"
             files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.npy")))
-            files_test = sorted(glob.glob(os.path.join("data/ecg/ecg_test", "ecg_*.npy")))
+            files_test = sorted(glob.glob(os.path.join("data/ecg_test", "ecg_*.npy")))
         elif args.category == "energy":
             data_dir = "data/energy/original"
             files = sorted(glob.glob(os.path.join(data_dir, "energy_*.npy")))
@@ -203,8 +205,8 @@ if __name__ == "__main__":
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
     dim = 100
-    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enalbe_mp_norm, dim=dim)
-    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enalbe_mp_norm, dim=dim)
+    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enalbe_mp_norm, dim=dim, znorm=args.enalbe_mp_norm)
+    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enalbe_mp_norm, dim=dim, znorm=args.enalbe_mp_norm)
     window_len = 100  # or args.window_len
     X_train_full = blockify_mp(X_train_full, window_len)
     X_test_full  = blockify_mp(X_test_full,  window_len)
@@ -293,24 +295,6 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
-    # G, _, d_loss_list, g_loss_list, g_adv_loss_list, mp_loss_list = train_gan(train_loader, 
-    #                                             G, D_net, 
-    #                                             device=device, 
-    #                                             checkpoint_path=model_save_path, 
-    #                                             epoch=train_epoch, 
-    #                                             mp_window_size=args.m, 
-    #                                             k_violation=args.k, 
-    #                                             alpha=args.alpha, 
-    #                                             activ_func=args.obj_func, 
-    #                                             time_limit=args.time,
-    #                                             d_model = args.d_model,
-    #                                             pi_mp=args.pi_mp,
-    #                                             pi_adv=args.pi_adv,
-    #                                             lr_D=args.lr_d,
-    #                                             lr_G=args.lr_g,
-    #                                             latent=args.enable_latent,
-    #                                             coeff_dist = args.coeff_dist,
-    #                                             coeff_identity=args.coeff_index)
     G, G_loss, MP_loss, TS_loss, best_g_loss = train_inverse(train_loader,
                                                 val_loader, 
                                                  G, 
@@ -323,7 +307,8 @@ if __name__ == "__main__":
                                                  activ_func=args.obj_func, 
                                                  time_limit=args.time,
                                                  pi_mp=args.pi_mp,
-                                                 pi_ts=args.pi_ts,
+                                                 pi_mse=args.pi_mse,
+                                                 pi_pcc=args.pi_pcc,
                                                  lr_G=args.lr_g,
                                                  latent=args.enable_latent,
                                                  coeff_dist = args.coeff_dist,
