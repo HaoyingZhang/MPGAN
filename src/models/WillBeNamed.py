@@ -140,7 +140,7 @@ class Generator(nn.Module):
 
         self.attn = SelfAttention1D(block_channels, num_heads=4, proj_drop=proj_drop) if use_attention else None
 
-        self.mid_norm = make_group_norm(block_channels)   # ✅ adaptive
+        self.mid_norm = make_group_norm(block_channels) 
         self.mid_act  = nn.GELU()
         self.head     = nn.Conv1d(block_channels, 1, kernel_size=3, padding=1)
         self.drop     = nn.Dropout(0.1)
@@ -163,7 +163,9 @@ class Generator(nn.Module):
             x = x.unsqueeze(1)                  # -> [B, 1, L]
 
         elif x.dim() == 3:
-            x = x.permute(0, 2, 1)              # -> [B, C, L]
+            if x.shape[1] == self.L and x.shape[2] != self.L:
+                # [B, L, C] → [B, C, L]
+                x = x.permute(0, 2, 1)
 
         else:
             raise ValueError(

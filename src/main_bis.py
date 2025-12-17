@@ -62,7 +62,7 @@ def plot_res(folder_name, real_data, fake_data, name_list, m, mp_norm):
         # Plot the time series
         axs[0, 0].plot(real_ts, label='Original TS', color=original_color)
         axs[0, 0].plot(fake_ts, label='Fake TS', color=fake_color)
-        axs[0, 0].set_title(f"Pearson Corr: {round(pearson_correlation(real_ts, np.array(fake_ts), 2))}", fontsize=12)
+        axs[0, 0].set_title(f"Pearson Corr: {round(pearson_correlation(real_ts, np.array(fake_ts)), 2)}", fontsize=12)
         axs[0, 0].legend(fontsize=10)
 
         # Plot the Matrix Profile distances
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     parser.add_argument("-pi_pcc", type=float, default = 0.05, help="Define the coefficient of the original PCC loss")
     parser.add_argument("-pi_grad", type=float, default = 0.05, help="Define the coefficient of the original Temporal Gradiant loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
-    parser.add_argument("-mp_norm", "--enalbe_mp_norm", action="store_true", help="Enable normalized MP")
+    parser.add_argument("-mp_norm", "--enable_mp_norm", action="store_true", help="Enable normalized MP")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
     parser.add_argument("-lr_d", type=float, default=1e-5, help="Learning rate for Discriminator")
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
@@ -206,12 +206,16 @@ if __name__ == "__main__":
 
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
-    dim = 100
-    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enalbe_mp_norm, dim=dim, znorm=args.enalbe_mp_norm)
-    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enalbe_mp_norm, dim=dim, znorm=args.enalbe_mp_norm)
+    if args.enable_mpd_only:
+        dim=100
+    else:
+        dim=2
+    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enable_mp_norm, dim=dim, znorm=args.enable_mp_norm)
+    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, dim=dim, znorm=args.enable_mp_norm)
     window_len = 100  # or args.window_len
-    X_train_full = blockify_mp(X_train_full, window_len)
-    X_test_full  = blockify_mp(X_test_full,  window_len)
+    if args.enable_mpd_only:
+        X_train_full = blockify_mp(X_train_full, window_len)
+        X_test_full  = blockify_mp(X_test_full,  window_len)
 
 
     # 2. Split: 60% train, 40% test
