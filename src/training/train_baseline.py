@@ -333,8 +333,9 @@ def train_inverse(
     activ_func="relu",
     time_limit=30,
     latent=False,
+    pi_mse=0.5,
+    pi_pcc=0.5,
     pi_mp=0.05,
-    pi_ts=0.05,
     coeff_dist=1.0,
     coeff_identity=1.0,
     lr_G=2e-4,
@@ -354,7 +355,7 @@ def train_inverse(
     loss_fn_ts = PearsonR2Loss()
     
     best_g_loss = float('inf')
-    G_loss, MP_loss, TS_loss = [], [], []
+    G_loss, MP_loss, TS_loss, MSE_loss, PCC_loss = [], [], [], [], []
 
     start_time = time.time()
 
@@ -364,7 +365,7 @@ def train_inverse(
             break
 
         G.train()
-        epoch_g, epoch_mp, epoch_ts = [], [], []
+        epoch_g, epoch_mp, epoch_ts, epoch_mse, epoch_pcc = [], [], [], [], []
 
         for mp_input_batch, time_series_batch in train_loader:
             # print(time_series_batch.shape)
@@ -392,12 +393,17 @@ def train_inverse(
             # real_ts_tensor = time_series_batch.squeeze(-1)
 
             # TS loss
-            if pi_ts > 0:
-                # ts_loss = ((fake_series_tensor - real_ts_tensor) ** 2).mean()
-                ts_loss = loss_fn_ts(fake_series_tensor, time_series_batch)
-
+            if pi_mse > 0:
+                ts_mse = ((fake_series_tensor - time_series_batch) ** 2).mean()
             else:
-                ts_loss = torch.tensor(0.0, device=device)
+                ts_mse = torch.tensor(0.0, device=device)
+            if pi_pcc > 0:
+                ts_pcc = loss_fn_ts(fake_series_tensor, time_series_batch)
+            else:
+                ts_pcc = torch.tensor(0.0, device=device)
+
+            ts_loss = pi_mse * ts_mse + pi_pcc * ts_pcc
+            
 
             # MP loss
             if pi_mp > 0:
@@ -415,7 +421,7 @@ def train_inverse(
             else:
                 mp_loss = torch.tensor(0.0, device=device)
 
-            g_loss = pi_mp * mp_loss + pi_ts * ts_loss
+            g_loss = pi_mp * mp_loss + ts_loss
 
             optimizer_G.zero_grad()
             g_loss.backward()
@@ -424,15 +430,21 @@ def train_inverse(
             epoch_mp.append(mp_loss.item())
             epoch_g.append(g_loss.item())
             epoch_ts.append(ts_loss.item())
+            epoch_pcc.append(ts_pcc.item())
+            epoch_mse.append(ts_mse.item())
 
         # per-epoch stats
         G_loss.append(float(np.mean(epoch_g)) if epoch_g else float("nan"))
         MP_loss.append(float(np.mean(epoch_mp)) if epoch_mp else float("nan"))
         TS_loss.append(float(np.mean(epoch_ts)) if epoch_ts else float("nan"))
+        MSE_loss.append(float(np.mean(epoch_mse)) if epoch_mse else float("nan"))
+        PCC_loss.append(float(np.mean(epoch_pcc)) if epoch_pcc else float("nan"))
 
         print(
             f"Epoch {ep+1}: "
             f"mp={MP_loss[-1]:.4f}, "
+            f"mse loss={MSE_loss[-1]:.4f}, "
+            f"pcc loss={PCC_loss[-1]:.4f}, "
             f"ts={TS_loss[-1]:.4f}, "
             f"G={G_loss[-1]:.4f}"
         )
