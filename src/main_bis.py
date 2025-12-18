@@ -217,46 +217,6 @@ if __name__ == "__main__":
                 )
                 X_train_mm[write_idx] = mp
                 write_idx += 1
-    
-    # Load test set into memmap
-    X_test_mm = np.memmap(
-        "X_test.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(140, L, C)
-    )
-
-    y_test_mm = np.memmap(
-        "y_test.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(140, args.n)
-    )
-
-    write_idx = 0
-
-    n_ts_per_person_test = 20
-    for file in files_test:
-        ts_mm = np.memmap(file, dtype=np.float32, mode="r", shape=(n_ts_per_person, args.n))
-        # ts_mm = ts_mm[:n_ts_per_person_test]
-
-        for i in range(0, len(ts_mm), batch_size):
-            batch = ts_mm[i:i+batch_size]
-
-            for ts in batch:
-                # y
-                y_test_mm[write_idx] = ts
-
-                # X (MP)
-                mp = MP_compute_single(
-                    ts, m,
-                    norm=args.enable_mp_norm,
-                    mpd_only=args.enable_mpd_only,
-                    znorm=args.znorm_mp,
-                    embedding=args.enable_mp_embedding
-                )
-                X_test_mm[write_idx] = mp
-                write_idx += 1
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
@@ -275,23 +235,8 @@ if __name__ == "__main__":
         num_workers=4,
         pin_memory=True
     )
-    test_dataset = MemmapDataset(
-        "X_test.dat",
-        "y_test.dat",
-        shape_X=(args.n_ts, L, C),
-        shape_y=(args.n_ts, args.n)
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=16,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
-    )
     print(f"Training set length: {len(train_dataset)}")
     # print(f"Validation set length: {len(val_set.indices)}")
-    print(f"Test set length: {len(test_dataset)}")
 
     # Convert Subset -> Tensor
 
@@ -425,7 +370,7 @@ if __name__ == "__main__":
         else:
             fake_data = G(test_tensor)
     fake_data = normalize(fake_data)
-    test_file_names = ["ecg_"+str(i) for i in range(len(test_loader))]
+    test_file_names = ["ecg_"+str(i) for i in range(len(X_test_full))]
     # Plot results
     if args.plot:
         plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.enable_mp_norm)
