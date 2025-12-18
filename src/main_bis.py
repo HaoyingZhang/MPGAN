@@ -8,6 +8,7 @@ import sys, os, argparse, glob, json
 os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
 from scipy import stats
+from dataloader import MemmapDataset
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
@@ -19,7 +20,7 @@ from models.CNN import Discriminator as D
 from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as G_WillBeNamed
 from training.train_baseline import train_gan, train_wgan_gp, train_inverse
-from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive
+from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive, MP_compute_single
 from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch, objective_function_unified
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
@@ -160,126 +161,172 @@ if __name__ == "__main__":
     time_str = time.strftime("%Y-%m-%d_%H:%M:%S")
     train_epoch = int(args.e)
 
-    y_train_full = []
-    y_train = []
-    y_test_full = []
-    y_test = []
+    data_dir = "data/ecg/data_train_long"
+    files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.dat")))
+    files_test = sorted(glob.glob(os.path.join("data/ecg/data_test_long", "ecg_*.dat")))
 
-    category = args.category
-    if args.category == "theoretical":
-        rng = np.random.default_rng(args.random_seed)
-        for i in range(args.n_ts):
-            ts = rng.random(n).astype(np.float32)
-            y_train_full.append(normalize(ts))       # use your normalize
-    else:
-        if args.category == "ecg":
-            data_dir = "data/ecg/data_train_long"
-            files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.dat")))
-            files_test = sorted(glob.glob(os.path.join("data/ecg/data_test_long", "ecg_*.dat")))
-        elif args.category == "energy":
-            data_dir = "data/energy/original"
-            files = sorted(glob.glob(os.path.join(data_dir, "energy_*.npy")))
-        else:
-            raise ValueError(f"Unknown dataset category: {args.category}")
+    assert args.n_ts % 7 == 0
+    n_ts_per_person = args.n_ts // 7
 
-        if len(files)*1000000 < args.n_ts:
-            raise ValueError(f"Not enough files: found {len(files)}*e6, need {args.n_ts}")
-
-        if args.n_ts % 7 != 0:
-            raise ValueError(f"The number of time series need to be divisable by 7")
-        n_ts_per_person = int(args.n_ts / 7)
-
-        for i in range(len(files)):
-            ts = np.memmap(
-                files[i],
-                dtype=np.float32,
-                mode="r",
-                shape=(1000000, args.n)
-            )                 
-            ts = ts[:n_ts_per_person]
-
-            T = ts.shape[1]
-            if T >= n:
-                ts_fixed = ts[:, :n]
-            else:
-                pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
-                ts_fixed = np.concatenate([ts, pad], axis=1)
-            
-            y_train.append(ts_fixed)
-        y_train_full = np.concatenate(y_train, axis=0)
-        
-        # append test data
-        for i in range(len(files_test)):
-            ts = np.memmap(
-                files_test[i],
-                dtype=np.float32,
-                mode="r",
-                shape=(100, 1000)
-            )                    # (T,) or (T,D)
-            ts = ts[:10]
-            T = ts.shape[1]
-            if T >= n:
-                ts_fixed = ts[:, :n]
-            else:
-                pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
-                ts_fixed = np.concatenate([ts, pad], axis=1)
-            
-            y_test.append(ts_fixed)
-        y_test_full = np.concatenate(y_test, axis=0)
-
-
-    # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
-    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
-    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
-    window_len = 100  # or args.window_len
+    L = args.n - m + 1
+    window_len = 100
     if args.enable_mpd_only:
-        X_train_full = blockify_mp(X_train_full, window_len)
-        X_test_full  = blockify_mp(X_test_full,  window_len)
+        C = window_len
+    else:
+        if args.enable_mp_embedding:
+            C = L
+        else:
+            C = 2
 
+    # Preallocate OUTPUT memmaps
+    X_train_mm = np.memmap(
+        "X_train.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(args.n_ts, L, C)
+    )
+
+    y_train_mm = np.memmap(
+        "y_train.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(args.n_ts, args.n)
+    )
+
+    write_idx = 0
+    batch_size = 64
+
+    for file in files:
+        ts_mm = np.memmap(file, dtype=np.float32, mode="r", shape=(1_000_000, args.n))
+        ts_mm = ts_mm[:n_ts_per_person]
+
+        for i in range(0, len(ts_mm), batch_size):
+            batch = ts_mm[i:i+batch_size]
+
+            for ts in batch:
+                # y
+                y_train_mm[write_idx] = ts
+
+                # X (MP)
+                mp = MP_compute_single(
+                    ts, m,
+                    norm=args.enable_mp_norm,
+                    mpd_only=args.enable_mpd_only,
+                    znorm=args.znorm_mp,
+                    embedding=args.enable_mp_embedding
+                )
+                X_train_mm[write_idx] = mp
+                write_idx += 1
+    
+    # Load test set into memmap
+    X_test_mm = np.memmap(
+        "X_test.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(140, L, C)
+    )
+
+    y_test_mm = np.memmap(
+        "y_test.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(140, args.n)
+    )
+
+    write_idx = 0
+
+    n_ts_per_person_test = 20
+    for file in files_test:
+        ts_mm = np.memmap(file, dtype=np.float32, mode="r", shape=(n_ts_per_person, args.n))
+        # ts_mm = ts_mm[:n_ts_per_person_test]
+
+        for i in range(0, len(ts_mm), batch_size):
+            batch = ts_mm[i:i+batch_size]
+
+            for ts in batch:
+                # y
+                y_test_mm[write_idx] = ts
+
+                # X (MP)
+                mp = MP_compute_single(
+                    ts, m,
+                    norm=args.enable_mp_norm,
+                    mpd_only=args.enable_mpd_only,
+                    znorm=args.znorm_mp,
+                    embedding=args.enable_mp_embedding
+                )
+                X_test_mm[write_idx] = mp
+                write_idx += 1
 
     # 2. Split: 60% train, 40% test
     generator = torch.Generator().manual_seed(args.random_seed)
     # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
-    train_set = Subset(X_train_full,list(range(len(X_train_full))))
-    test_set = Subset(X_test_full,list(range(len(X_test_full))))
-    print(f"Training set length: {len(train_set.indices)}")
+    train_dataset = MemmapDataset(
+        "X_train.dat",
+        "y_train.dat",
+        shape_X=(args.n_ts, L, C),
+        shape_y=(args.n_ts, args.n)
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    test_dataset = MemmapDataset(
+        "X_test.dat",
+        "y_test.dat",
+        shape_X=(args.n_ts, L, C),
+        shape_y=(args.n_ts, args.n)
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=16,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    print(f"Training set length: {len(train_dataset)}")
     # print(f"Validation set length: {len(val_set.indices)}")
-    print(f"Test set length: {len(test_set.indices)}")
+    print(f"Test set length: {len(test_dataset)}")
 
     # Convert Subset -> Tensor
 
     # Train and test tensors
-    train_tensor = torch.stack([torch.tensor(X_train_full[i], dtype=torch.float32) 
-                                for i in train_set.indices])
+    # train_tensor = torch.stack([torch.tensor(X_train_full[i], dtype=torch.float32) 
+    #                             for i in train_set.indices])
     # train_tensor = train_tensor.view(train_tensor.size(0), -1)
 
-    val_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
-                                for i in test_set.indices])
+    # val_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
+    #                             for i in test_set.indices])
     # val_tensor = val_tensor.view(val_tensor.size(0), -1)
 
-    test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
-                                for i in test_set.indices])
+    # test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
+    #                             for i in test_set.indices])
     # test_tensor = test_tensor.view(test_tensor.size(0), -1)
 
     # Train and test labels
-    train_labels = torch.stack([torch.tensor(y_train_full[i], dtype=torch.float32) 
-                                for i in train_set.indices])
-    val_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
-                                for i in test_set.indices])
-    test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
-                                for i in test_set.indices])
+    # train_labels = torch.stack([torch.tensor(y_train_full[i], dtype=torch.float32) 
+    #                             for i in train_set.indices])
+    # val_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
+    #                             for i in test_set.indices])
+    # test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
+    #                             for i in test_set.indices])
 
-    train_dataset = TensorDataset(train_tensor, train_labels)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    # train_dataset = TensorDataset(train_tensor, train_labels)
+    # train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 
-    val_dataset = TensorDataset(val_tensor, val_labels)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=True)
+    # val_dataset = TensorDataset(val_tensor, val_labels)
+    # val_loader = DataLoader(val_dataset, batch_size=16, shuffle=True)
 
     # Initialize model hyperparameters
     batch_size, n_input, window_len = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
     
     hidden_dim = 64
-    mp_dim = X_train_full.shape[2]  # MPD + MPI
+    mp_dim = C  # MPD + MPI
 
     # assert n_input == 2*(n-m+1)
 
@@ -321,7 +368,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
     G, G_loss, MP_loss, TS_loss, best_g_loss = train_inverse(train_loader,
-                                                val_loader, 
+                                                None, 
                                                  G, 
                                                  device=device, 
                                                  checkpoint_path=model_save_path, 
@@ -348,8 +395,29 @@ if __name__ == "__main__":
     # test_dataset = TensorDataset(test_tensor, test_labels)
     # test_loader = DataLoader(test_dataset, batch_size=16, shuffle=True)
     # Prepare inputs from original test indices
-
-    
+    y_test, y_test_full = [], []
+    for i in range(len(files_test)):
+        ts = np.memmap(
+            files_test[i],
+            dtype=np.float32,
+            mode="r",
+            shape=(100, 1000)
+        )                    # (T,) or (T,D)
+        ts = ts[:10]
+        T = ts.shape[1]
+        if T >= n:
+            ts_fixed = ts[:, :n]
+        else:
+            pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
+            ts_fixed = np.concatenate([ts, pad], axis=1)
+        
+        y_test.append(ts_fixed)
+    y_test_full = np.concatenate(y_test, axis=0) 
+    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
+    test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
+                                for i in range(len(X_test_full))])
+    test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
+                                for i in range(len(y_test_full))])
     with torch.no_grad():
         if args.enable_latent:
             z = torch.randn(test_tensor.size(0), 64, device='cpu') if G.z_dim else None
@@ -357,7 +425,7 @@ if __name__ == "__main__":
         else:
             fake_data = G(test_tensor)
     fake_data = normalize(fake_data)
-    test_file_names = ["ecg_"+str(i) for i in test_set.indices]
+    test_file_names = ["ecg_"+str(i) for i in range(len(test_loader))]
     # Plot results
     if args.plot:
         plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.enable_mp_norm)

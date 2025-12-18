@@ -40,6 +40,52 @@ def build_mp_embedding(mpd, mpi, fill_value= 100.0):
     E[rows, mpi] = mpd
     return E
 
+def blockify_mp_unit(mp_array, window_len):
+    """
+    mp_array: np.ndarray of shape [n_ts, L]
+    returns:  np.ndarray of shape [n_ts, L, window_len]
+    """
+    L = len(mp_array)
+
+    pad = window_len - 1
+    padded = np.pad(
+        mp_array,
+        pad_width=((0, pad)),
+        mode="constant",
+        constant_values=0.0
+    )  # [n_ts, L + pad]
+
+    blocks = np.zeros((L, window_len), dtype=np.float32)
+
+    for i in range(L):
+        blocks[i] = padded[i:i + window_len]
+
+    return blocks
+
+def MP_compute_single(
+                ts, m,
+                norm=False,
+                mpd_only=False,
+                znorm=False,
+                embedding=False
+            ):
+    ts = np.array(ts, dtype=np.float64)
+
+    profile = stumpy.stump(ts, m=m, normalize=znorm)
+    if norm:
+        mpd, mpi = normalized_MP(profile)
+    else:
+        mpd = profile[:, 0].astype(np.float32)
+        mpi = profile[:, 1].astype(int)
+
+    if not mpd_only:
+        if embedding:
+            line = build_mp_embedding(mpd, mpi)
+        else:
+            line = [[mpd[i], mpi[i]] for i in range(len(mpd))]
+    else:
+        line = blockify_mp_unit(mpd)
+    return line
 
 def MP_compute_recursive(ts_data, m, norm=False, mpd_only=False, znorm=True, embedding=False):
     """
