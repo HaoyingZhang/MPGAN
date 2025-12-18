@@ -131,7 +131,7 @@ if __name__ == "__main__":
     parser.add_argument("-pi_pcc", type=float, default = 0.05, help="Define the coefficient of the original PCC loss")
     parser.add_argument("-pi_grad", type=float, default = 0.05, help="Define the coefficient of the original Temporal Gradiant loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
-    parser.add_argument("-mp_norm", "--enable_mp_norm", action="store_true", help="Enable normalized MP")
+    parser.add_argument("-mp_norm", "--enable_mp_norm", action="store_true", help="Enable normalized MP in input")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
     parser.add_argument("-lr_d", type=float, default=1e-5, help="Learning rate for Discriminator")
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
@@ -158,7 +158,9 @@ if __name__ == "__main__":
     train_epoch = int(args.e)
 
     y_train_full = []
+    y_train = []
     y_test_full = []
+    y_test = []
 
     category = args.category
     if args.category == "theoretical":
@@ -168,41 +170,59 @@ if __name__ == "__main__":
             y_train_full.append(normalize(ts))       # use your normalize
     else:
         if args.category == "ecg":
-            data_dir = "data/ecg_train"
-            files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.npy")))
-            files_test = sorted(glob.glob(os.path.join("data/ecg_test", "ecg_*.npy")))
+            data_dir = "data/ecg/data_train_long"
+            files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.dat")))
+            files_test = sorted(glob.glob(os.path.join("data/ecg/data_test_long", "ecg_*.dat")))
         elif args.category == "energy":
             data_dir = "data/energy/original"
             files = sorted(glob.glob(os.path.join(data_dir, "energy_*.npy")))
         else:
             raise ValueError(f"Unknown dataset category: {args.category}")
 
-        if len(files) < args.n_ts:
-            raise ValueError(f"Not enough files: found {len(files)}, need {args.n_ts}")
+        if len(files)*1000000 < args.n_ts:
+            raise ValueError(f"Not enough files: found {len(files)}*e6, need {args.n_ts}")
 
-        for i in range(args.n_ts):
-            ts = np.load(files[i])                     # (T,) or (T,D)
-            ts = np.asarray(ts, dtype=np.float32)
-            if ts.ndim == 2:                           # pick first channel if multivariate
-                ts = ts[:, 0]
-            T = ts.shape[0]
+        if args.n_ts % 7 != 0:
+            raise ValueError(f"The number of time series need to be divisable by 7")
+        n_ts_per_person = int(args.n_ts / 7)
+
+        for i in range(len(files)):
+            ts = np.memmap(
+                files[i],
+                dtype=np.float32,
+                mode="r",
+                shape=(1000000, args.n)
+            )                 
+            ts = ts[:n_ts_per_person]
+
+            T = ts.shape[1]
             if T >= n:
-                ts_fixed = ts[:n]
+                ts_fixed = ts[:, :n]
             else:
-                pad = np.zeros((n - T,), dtype=np.float32)
-                ts_fixed = np.concatenate([ts, pad], axis=0)
-            y_train_full.append(normalize(ts_fixed))  
+                pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
+                ts_fixed = np.concatenate([ts, pad], axis=1)
+            
+            y_train.append(ts_fixed)
+        y_train_full = np.concatenate(y_train, axis=0)
         
         # append test data
-        for i in range(200):
-            ts = np.load(files_test[i])
-            ts = np.asarray(ts, dtype=np.float32)
-            if ts.shape[0] >= n:
-                ts_fixed = ts[:n]
+        for i in range(len(files_test)):
+            ts = np.memmap(
+                files_test[i],
+                dtype=np.float32,
+                mode="r",
+                shape=(100, 1000)
+            )                    # (T,) or (T,D)
+            ts = ts[:10]
+            T = ts.shape[1]
+            if T >= n:
+                ts_fixed = ts[:, :n]
             else:
-                pad = np.zeros((n - T,), dtype=np.float32)
-                ts_fixed = np.concatenate([ts, pad], axis=0)
-            y_test_full.append(normalize(ts_fixed))
+                pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
+                ts_fixed = np.concatenate([ts, pad], axis=1)
+            
+            y_test.append(ts_fixed)
+        y_test_full = np.concatenate(y_test, axis=0)
 
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
@@ -338,7 +358,7 @@ if __name__ == "__main__":
         else:
             fake_data = G(test_tensor)
     fake_data = normalize(fake_data)
-    test_file_names = [files_test[i] for i in test_set.indices]
+    test_file_names = ["ecg_"+str(i) for i in test_set.indices]
     # Plot results
     if args.plot:
         plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.enable_mp_norm)
