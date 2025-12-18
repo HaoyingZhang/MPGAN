@@ -141,10 +141,13 @@ if __name__ == "__main__":
     parser.add_argument("-do", "--enable_drop_out", action="store_true", help="Enable the drop out layer")
     parser.add_argument("-mpd_only", "--enable_mpd_only", action="store_true", help="Enable to use MPD only")
     parser.add_argument("-znorm", "--znorm_mp", action="store_true", help="Using z-normalized Euclidean distance in MP computing")
+    parser.add_argument("-mp_embedding", "--enable_mp_embedding", action="store_true", help="Using matrix embedding for the MP input")
     args = parser.parse_args()
 
     if args.obj_func not in ["relu", "exp"]: 
         parser.error(f"Must choose objective function between relu or exp, but got {args.obj_func}")
+    if args.enable_mp_embedding and args.enable_mp_norm:
+        parser.error(f"The MP embedding and MP norm cannot be enabled in the same time")
 
     m = args.m
     n = args.n
@@ -226,12 +229,8 @@ if __name__ == "__main__":
 
 
     # Calculate MP from the time series to compose X_full, X_full should be with dimension [n_ts, 2, n-m+1]
-    if args.enable_mpd_only:
-        dim=100
-    else:
-        dim=2
-    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enable_mp_norm, dim=dim, znorm=args.enable_mp_norm)
-    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, dim=dim, znorm=args.enable_mp_norm)
+    X_train_full = MP_compute_recursive(y_train_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
+    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
     window_len = 100  # or args.window_len
     if args.enable_mpd_only:
         X_train_full = blockify_mp(X_train_full, window_len)
@@ -280,7 +279,7 @@ if __name__ == "__main__":
     batch_size, n_input, window_len = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
     
     hidden_dim = 64
-    mp_dim = dim  # MPD + MPI
+    mp_dim = X_train_full.shape[2]  # MPD + MPI
 
     # assert n_input == 2*(n-m+1)
 

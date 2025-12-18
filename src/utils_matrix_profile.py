@@ -33,7 +33,15 @@ def compute_matrix_profile_distance(real_series, fake_series, window_size=10, no
 
     return total_dist + total_index_mismatch
 
-def MP_compute_recursive(ts_data, m, norm=False, dim=2, znorm=True):
+def build_mp_embedding(mpd, mpi, fill_value= 100.0):
+    L = len(mpd)
+    E = np.full((L,L), fill_value, dtype=np.float32)
+    rows = np.arange(L, dtype=int)
+    E[rows, mpi] = mpd
+    return E
+
+
+def MP_compute_recursive(ts_data, m, norm=False, mpd_only=False, znorm=True, embedding=False):
     """
     Compute MP from the time series from ts_data vector, return list dimension [n_ts, 2, n-m+1]
     """ 
@@ -41,14 +49,17 @@ def MP_compute_recursive(ts_data, m, norm=False, dim=2, znorm=True):
     for ts in ts_data:
         ts = np.array(ts, dtype=np.float64)
 
-        profile = stumpy.stump(ts, m=m, normalize=normalize)
+        profile = stumpy.stump(ts, m=m, normalize=znorm)
         if norm:
             mpd, mpi = normalized_MP(profile)
         else:
             mpd = profile[:, 0].astype(np.float32)
             mpi = profile[:, 1].astype(int)
-        if dim==2:
-            mp_list.append([mpd, mpi])
+        if not mpd_only:
+            if embedding:
+                mp_list.append(build_mp_embedding(mpd, mpi))
+            else:
+                mp_list.append([[mpd[i], mpi[i]] for i in range(len(mpd))])
         else:
             mp_list.append(mpd)
     return np.array(mp_list, dtype=np.float32)

@@ -163,9 +163,8 @@ class Generator(nn.Module):
             x = x.unsqueeze(1)                  # -> [B, 1, L]
 
         elif x.dim() == 3:
-            if x.shape[1] == self.L and x.shape[2] != self.L:
-                # [B, L, C] → [B, C, L]
-                x = x.permute(0, 2, 1)
+            # [B, L, C] → [B, C, L]
+            x = x.permute(0, 2, 1)
 
         else:
             raise ValueError(
