@@ -173,10 +173,7 @@ if __name__ == "__main__":
     if args.enable_mpd_only:
         C = window_len
     else:
-        if args.enable_mp_embedding:
-            C = L
-        else:
-            C = 2
+        C = 2
 
     # Preallocate OUTPUT memmaps
     X_train_mm = np.memmap(
@@ -212,14 +209,12 @@ if __name__ == "__main__":
                     ts, m,
                     norm=args.enable_mp_norm,
                     mpd_only=args.enable_mpd_only,
-                    znorm=args.znorm_mp,
-                    embedding=args.enable_mp_embedding
+                    znorm=args.znorm_mp
                 )
                 X_train_mm[write_idx] = mp
                 write_idx += 1
 
-    # 2. Split: 60% train, 40% test
-    generator = torch.Generator().manual_seed(args.random_seed)
+    # generator = torch.Generator().manual_seed(args.random_seed)
     # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
     train_dataset = MemmapDataset(
         "X_train.dat",
@@ -271,7 +266,10 @@ if __name__ == "__main__":
     batch_size, n_input, window_len = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
     
     hidden_dim = 64
-    mp_dim = C  # MPD + MPI
+    if args.enable_mp_embedding:
+        mp_dim = L
+    else:
+        mp_dim = C  # MPD + MPI
 
     # assert n_input == 2*(n-m+1)
 
@@ -331,7 +329,8 @@ if __name__ == "__main__":
                                                  latent=args.enable_latent,
                                                  coeff_dist = args.coeff_dist,
                                                  coeff_identity=args.coeff_index,
-                                                 mp_norm=args.znorm_mp)
+                                                 mp_norm=args.znorm_mp,
+                                                 embedding_mp=args.enable_mp_embedding)
 
     G.load_state_dict(torch.load(model_save_path+"best_model.pth"))
     G = G.cpu()

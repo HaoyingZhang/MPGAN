@@ -1,5 +1,6 @@
 import numpy as np
 import stumpy
+import torch
 try:
     from numba import njit
     JIT = True
@@ -38,6 +39,44 @@ def build_mp_embedding(mpd, mpi, fill_value= 100.0):
     E = np.full((L,L), fill_value, dtype=np.float32)
     rows = np.arange(L, dtype=int)
     E[rows, mpi] = mpd
+    return E
+
+def build_mp_embedding_tensor(mpd, mpi, fill_value=100.0):
+    """
+    mpd : torch.Tensor, shape [L]
+    mpi : torch.Tensor | list | np.ndarray, shape [L]
+    returns: torch.Tensor, shape [L, L]
+    """
+
+    # --- ensure mpd is a 1D tensor ---
+    if not torch.is_tensor(mpd):
+        mpd = torch.tensor(mpd, dtype=torch.float32)
+
+    mpd = mpd.flatten()
+    device = mpd.device
+    L = mpd.numel()
+
+    # --- convert mpi to list[int] as requested ---
+    if torch.is_tensor(mpi):
+        mpi_list = mpi.detach().cpu().tolist()
+    else:
+        mpi_list = list(mpi)
+
+    mpi_list = [int(i) for i in mpi_list]
+
+    # --- build embedding ---
+    E = torch.full(
+        (L, L),
+        fill_value,
+        dtype=mpd.dtype,
+        device=device
+    )
+
+    rows = torch.arange(L, device=device)
+    cols = torch.tensor(mpi_list, device=device)
+
+    E[rows, cols] = mpd
+
     return E
 
 def blockify_mp_unit(mp_array, window_len):

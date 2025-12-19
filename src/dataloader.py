@@ -12,6 +12,6 @@ class MemmapDataset(Dataset):
 
     def __getitem__(self, idx):
         return (
-            torch.from_numpy(self.X[idx]),
-            torch.from_numpy(self.y[idx])
+            torch.from_numpy(self.X[idx].copy()),
+            torch.from_numpy(self.y[idx].copy())
         )
