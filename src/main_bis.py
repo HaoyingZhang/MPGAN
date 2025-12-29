@@ -20,7 +20,7 @@ from models.CNN import Discriminator as D
 from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as G_WillBeNamed
 from training.train_baseline import train_gan, train_wgan_gp, train_inverse
-from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive, MP_compute_single
+from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute_recursive, MP_compute_single, build_mp_embedding_batch
 from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch, objective_function_unified
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
@@ -372,7 +372,7 @@ if __name__ == "__main__":
     test_file_names = ["ecg_"+str(i) for i in range(len(X_test_full))]
     # Plot results
     if args.plot:
-        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.enable_mp_norm)
+        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.znorm_mp)
     
     # 5. Evaluate Utility: Matrix Profile
     # utility_score = np.mean([compute_matrix_profile_distance(real_x.squeeze(), fake_x.squeeze()) for real_x, fake_x in zip(test_set, fake_data)])

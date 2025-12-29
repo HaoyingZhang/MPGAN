@@ -12,7 +12,7 @@ import pandas as pd
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
 from src.training.objectives import objective_function_unified
-from src.utils_matrix_profile import build_mp_embedding_tensor
+from src.utils_matrix_profile import build_mp_embedding_batch
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
     return (time_series - time_series.min()) / (time_series.max() - time_series.min())
@@ -406,12 +406,14 @@ def train_inverse(
 
         for mp_input_batch, time_series_batch in train_loader:
             if embedding_mp:
-                mp_embeddings = []
-                for mp in mp_input_batch:
-                    mp_embeddings.append(build_mp_embedding_tensor(mp[:,0], mp[:,1]))
-                mp_input_batch = torch.stack(mp_embeddings, dim=0)
+                mpd_batch = mp_input_batch[..., 0]   # [B, L]
+                mpi_batch = mp_input_batch[..., 1]   # [B, L]
 
-            print(mp_input_batch.shape)
+                mp_input_batch = build_mp_embedding_batch(
+                    mpd_batch,
+                    mpi_batch,
+                    fill_value=100.0
+                )   
 
             # Skip empty batches
             if mp_input_batch.size(0) == 0:

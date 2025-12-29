@@ -41,41 +41,31 @@ def build_mp_embedding(mpd, mpi, fill_value= 100.0):
     E[rows, mpi] = mpd
     return E
 
-def build_mp_embedding_tensor(mpd, mpi, fill_value=100.0):
+def build_mp_embedding_batch(mpd_batch, mpi_batch, fill_value=100.0):
     """
-    mpd : torch.Tensor, shape [L]
-    mpi : torch.Tensor | list | np.ndarray, shape [L]
-    returns: torch.Tensor, shape [L, L]
+    mpd_batch : torch.Tensor [B, L]
+    mpi_batch : torch.Tensor [B, L]
+    returns   : torch.Tensor [B, L, L]
     """
+    device = mpd_batch.device
+    B, L = mpd_batch.shape
 
-    # --- ensure mpd is a 1D tensor ---
-    if not torch.is_tensor(mpd):
-        mpd = torch.tensor(mpd, dtype=torch.float32)
-
-    mpd = mpd.flatten()
-    device = mpd.device
-    L = mpd.numel()
-
-    # --- convert mpi to list[int] as requested ---
-    if torch.is_tensor(mpi):
-        mpi_list = mpi.detach().cpu().tolist()
-    else:
-        mpi_list = list(mpi)
-
-    mpi_list = [int(i) for i in mpi_list]
-
-    # --- build embedding ---
+    # Allocate once
     E = torch.full(
-        (L, L),
+        (B, L, L),
         fill_value,
-        dtype=mpd.dtype,
+        dtype=mpd_batch.dtype,
         device=device
     )
 
-    rows = torch.arange(L, device=device)
-    cols = torch.tensor(mpi_list, device=device)
+    rows = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+    batch_idx = torch.arange(B, device=device).unsqueeze(1).expand(B, L)
 
-    E[rows, cols] = mpd
+    # mpi must be integer
+    cols = mpi_batch.long()
+
+    # Vectorized scatter
+    E[batch_idx, rows, cols] = mpd_batch
 
     return E
 
