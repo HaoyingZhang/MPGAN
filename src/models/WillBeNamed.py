@@ -192,7 +192,6 @@ class Generator(nn.Module):
         return torch.cat(conds, dim=-1)
 
     def forward(self, mp_input, z=None, y=None):
-        B = mp_input.size(0)
         x = self._prep_input(mp_input)       # [B, L, channels]
         h = self.in_proj(x)                  # either Conv1d or Identity
 

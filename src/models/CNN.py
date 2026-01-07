@@ -4,44 +4,28 @@ import torch.nn.functional as F
 
 ### --- GENERATOR --- ###
 class Generator(nn.Module):
-    def __init__(self, n, m):
+    def __init__(self, n, m, hidden=64):
         super(Generator, self).__init__()
-        self.n = n
-        self.m = m
+        L = n - m + 1
 
-        input_size = 2 * (n - m + 1)
+        input_size = (n - m + 1) * (n - m + 1)
         output_size = n
 
-        # Convolution: input_size -> output_size
-        # Kernel size m ensures (n - m + 1) receptive field
-        self.conv = nn.Conv1d(
-            in_channels=1, 
-            out_channels=output_size, 
-            kernel_size=m
+        self.net = nn.Sequential(
+            nn.Conv1d(L, hidden, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hidden, hidden, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(n),   # force output length = n
+            nn.Conv1d(hidden, 1, kernel_size=1)
         )
 
-        # Fully connected to adjust dimensions if necessary
-        self.fc = nn.Linear(n * (input_size - m + 1), output_size)
-
     def forward(self, x):
-        # Expect input shape: (batch_size, input_size)
-        x = x.unsqueeze(1)  # add channel dimension: (batch, 1, input_size)
-
-        # Conv1d: (batch, out_channels=n, L_out)
-        x = self.conv(x)
-
-        # Non-linearity
-        x = F.relu(x)
-
-        # Flatten: (batch, n, L_out) -> (batch, n*L_out)
-        x = x.view(x.size(0), -1)
-
-        # Project to output size n
-        x = self.fc(x)
-
-        x = torch.sigmoid(x)
+        x = x.permute(0, 2, 1)
+        y = self.net(x)
+        # y = torch.sigmoid(y)
         
-        return x
+        return y.squeeze(1)
 
 
 

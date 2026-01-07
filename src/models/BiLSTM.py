@@ -5,22 +5,25 @@ import torch.nn.functional as F
 
 ### --- GENERATOR --- ###
 class Generator(nn.Module):
-    def __init__(self, input_dim=2, hidden_dim=64, output_length=100):  # output_length = n
+    def __init__(self, n, m, hidden_dim=64):  # output_length = n
         super().__init__()
+        self.n = n
+        self.L = n - m + 1
         self.lstm = nn.LSTM(
-            input_size=input_dim,
+            input_size=self.L,
             hidden_size=hidden_dim,
             num_layers=2,
             batch_first=True,
             bidirectional=True
         )
-        self.fc = nn.Linear(hidden_dim * 2, output_length)
+        self.fc = nn.Linear(hidden_dim * 2, n)
 
-    def forward(self, mp_input):  # mp_input: (B, n-m+1, 2)
-        out, _ = self.lstm(mp_input)                 # out: (B, n-m+1, hidden_dim)
-        out = self.fc(out[:, -1, :])                 # use last hidden state → (B, output_length)
-        out = torch.sigmoid(out)                     # ensure values in [0, 1]
-        return out.unsqueeze(-1)                     # shape: (B, n, 1)
+    def forward(self, mp_input):  # mp_input: (B, n-m+1, n-m+1)
+        out, _ = self.lstm(mp_input)                 
+        h = out[:, -1, :]                 
+        y = self.fc(h)   
+        y = torch.sigmoid(y)                 
+        return y                    # shape: (B, n, 1)
 
 ### --- DISCRIMINATOR --- ###
 class Discriminator(nn.Module):

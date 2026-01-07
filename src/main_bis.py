@@ -13,9 +13,10 @@ from dataloader import MemmapDataset
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
 from models.LSTM import Generator as G_LSTM
-from models.BiLSTM_latent import Generator as G_biLSTM
+from models.BiLSTM import Generator as G_biLSTM
 # from models.LSTM import Discriminator
 # from models.BiLSTM import Pulse2pulseDiscriminator
+from models.Transformer import MPEncoderDecoder as G_Transformer
 from models.CNN import Discriminator as D
 from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as G_WillBeNamed
@@ -202,6 +203,7 @@ if __name__ == "__main__":
 
             for ts in batch:
                 # y
+                ts = normalize(ts)
                 y_train_mm[write_idx] = ts
 
                 # X (MP)
@@ -282,7 +284,7 @@ if __name__ == "__main__":
     if args.g_model == "lstm":
         G = G_LSTM(input_dim=mp_dim, hidden_dim=hidden_dim, output_length=n)
     elif args.g_model == "bi-lstm":
-        G = G_biLSTM(input_dim=mp_dim, hidden_dim=hidden_dim, output_length=n, latent_dim=latent_dim)
+        G = G_biLSTM(n=n, m=m)
     elif args.g_model == "cnn":
         G = G_CNN(n=n, m=m)
     elif args.g_model == "willbenamed":
@@ -299,6 +301,8 @@ if __name__ == "__main__":
                 use_in_proj=args.enable_inj_proj,
                 dropout=args.enable_drop_out
             )
+    elif args.g_model == "transformer":
+        G = G_Transformer(n=n, m=m, d_model=args.m, nhead=5)
 
     if args.d_model == "lstm":
         D_net = D(input_dim=1, hidden_dim=hidden_dim)
@@ -354,10 +358,19 @@ if __name__ == "__main__":
         else:
             pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
             ts_fixed = np.concatenate([ts, pad], axis=1)
-        
+        ts_fixed = normalize(ts_fixed)
         y_test.append(ts_fixed)
     y_test_full = np.concatenate(y_test, axis=0) 
-    X_test_full = MP_compute_recursive(y_test_full, m, norm=args.enable_mp_norm, mpd_only=args.enable_mpd_only, znorm=args.znorm_mp, embedding=args.enable_mp_embedding)
+    X_test_full = np.stack([
+        MP_compute_single(
+                y_test_full[i], m,
+                norm=args.enable_mp_norm,
+                mpd_only=args.enable_mpd_only,
+                znorm=args.znorm_mp,
+                embedding=args.enable_mp_embedding
+            )
+            for i in range(len(y_test_full))
+        ])
     test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
                                 for i in range(len(X_test_full))])
     test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
@@ -368,7 +381,7 @@ if __name__ == "__main__":
             fake_data = G(test_tensor, z=z)
         else:
             fake_data = G(test_tensor)
-    fake_data = normalize(fake_data)
+    #fake_data = normalize(fake_data)
     test_file_names = ["ecg_"+str(i) for i in range(len(X_test_full))]
     # Plot results
     if args.plot:
