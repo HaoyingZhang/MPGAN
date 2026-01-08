@@ -107,4 +107,4 @@ class MPEncoderDecoder(nn.Module):
 
         y = self.out_proj(dec_out)              # [B, n, 1]
 
-        return y.squeeze(1)
+        return y.squeeze(-1) # [B, n]

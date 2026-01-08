@@ -430,7 +430,8 @@ def train_inverse(
             else:
                 fake_for_g = G(mp_input_batch)
 
-            # fake_for_g = normalize(fake_for_g)
+            fake_for_g = normalize(fake_for_g)
+            
 
             # list for MP loss
             fake_series_tensor = fake_for_g  
