@@ -144,6 +144,8 @@ if __name__ == "__main__":
     parser.add_argument("-mpd_only", "--enable_mpd_only", action="store_true", help="Enable to use MPD only")
     parser.add_argument("-znorm", "--znorm_mp", action="store_true", help="Using z-normalized Euclidean distance in MP computing")
     parser.add_argument("-mp_embedding", "--enable_mp_embedding", action="store_true", help="Using matrix embedding for the MP input")
+    parser.add_argument("-fill", "--fill_value", type=float, default = 100.0, help="The value to fill in the MP embedding")
+
     args = parser.parse_args()
 
     if args.obj_func not in ["relu", "exp"]: 
@@ -334,7 +336,8 @@ if __name__ == "__main__":
                                                  coeff_dist = args.coeff_dist,
                                                  coeff_identity=args.coeff_index,
                                                  mp_norm=args.znorm_mp,
-                                                 embedding_mp=args.enable_mp_embedding)
+                                                 embedding_mp=args.enable_mp_embedding,
+                                                 fill_value=args.fill_value)
 
     G.load_state_dict(torch.load(model_save_path+"best_model.pth"))
     G = G.cpu()
@@ -367,7 +370,8 @@ if __name__ == "__main__":
                 norm=args.enable_mp_norm,
                 mpd_only=args.enable_mpd_only,
                 znorm=args.znorm_mp,
-                embedding=args.enable_mp_embedding
+                embedding=args.enable_mp_embedding,
+                fill_value=args.fill_value
             )
             for i in range(len(y_test_full))
         ])

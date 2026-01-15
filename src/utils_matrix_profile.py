@@ -96,7 +96,8 @@ def MP_compute_single(
                 norm=False,
                 mpd_only=False,
                 znorm=False,
-                embedding=False
+                embedding=False,
+                fill_value = 100.0
             ):
     ts = np.array(ts, dtype=np.float64)
 
@@ -109,7 +110,7 @@ def MP_compute_single(
 
     if not mpd_only:
         if embedding:
-            line = build_mp_embedding(mpd, mpi)
+            line = build_mp_embedding(mpd, mpi, fill_value = fill_value)
         else:
             line = [[mpd[i], mpi[i]] for i in range(len(mpd))]
     else:
@@ -132,7 +133,7 @@ def MP_compute_recursive(ts_data, m, norm=False, mpd_only=False, znorm=True, emb
             mpi = profile[:, 1].astype(int)
         if not mpd_only:
             if embedding:
-                mp_list.append(build_mp_embedding(mpd, mpi))
+                mp_list.append(build_mp_embedding(mpd, mpi, fill_value=1000))
             else:
                 mp_list.append([[mpd[i], mpi[i]] for i in range(len(mpd))])
         else:
