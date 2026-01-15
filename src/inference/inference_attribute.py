@@ -6,6 +6,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from pathlib import Path
 import torch
+from collections import defaultdict
+from sklearn.metrics import precision_score, accuracy_score
 
 # ------------------------------------------------------------
 # Path handling (robust)
@@ -117,7 +119,8 @@ def build_test_dataset(
                     norm=False,
                     mpd_only=False,
                     znorm=znorm_mp,
-                    embedding=mp_embedding
+                    embedding=mp_embedding,
+                    fill_value=1000
                 )
                 for i in range(len(ts_all))
         ])
@@ -147,65 +150,80 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("-path_inversor", required=True)
+    parser.add_argument("-k", type=int, default=1)
 
     args = parser.parse_args()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
+    rng = np.random.default_rng(args.seed)
+    seeds = rng.choice(2**12, size=args.k, replace=False)
 
-    if args.verbose:
-        print("Building train set...")
-    X_train, y_train, pid_train = build_train_dataset(
-        TRAIN_DIR,
-        args.n_ts,
-        args.n
-    )
+    # model -> person -> label -> list of precision values
+    collector = defaultdict(lambda: defaultdict(list))
 
-    if args.verbose:
-        print("Building test set...")
-    X_test, y_test, pid_test = build_test_dataset(
-        TEST_DIR,
-        args.path_inversor,
-        args.n_ts,
-        args.n,
-        args.m,
-        args.znorm_mp,
-        args.mp_embedding,
-    )
+    for s in seeds:
+        print(f"Random seed: {s}")
+        random.seed(s)
+        np.random.seed(s)
 
-    models = {
-        "svm": SVC(),
-        "rf": RandomForestClassifier(max_depth=20, random_state=args.seed),
-        "knn": KNeighborsClassifier(n_neighbors=10),
+        if args.verbose:
+            print("Building train set...")
+        X_train, y_train, pid_train = build_train_dataset(
+            TRAIN_DIR,
+            args.n_ts,
+            args.n,
+        )
+
+        if args.verbose:
+            print("Building test set...")
+        X_test, y_test, pid_test = build_test_dataset(
+            TEST_DIR,
+            args.path_inversor,
+            args.n_ts,
+            args.n,
+            args.m,
+            args.znorm_mp,
+            args.mp_embedding,
+        )
+
+        models = {
+            "svm": SVC(),
+            "rf": RandomForestClassifier(max_depth=20, random_state=s),
+            "knn": KNeighborsClassifier(n_neighbors=10),
+        }
+
+        for name, model in models.items():
+            if args.verbose:
+                print(f"\nTraining {name}...")
+
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+            for pid in range(N_PERSONS):
+                mask = pid_test == pid
+                if mask.sum() == 0:
+                    continue
+
+                acc = accuracy_score(y_test[mask], y_pred[mask])
+                collector[name][pid].append(float(acc))
+
+                if args.verbose:
+                    print(f"{name} | person {pid} | accuracy {acc:.4f}")
+
+    # ------------------------------------------------------------
+    # Average over iterations
+    # ------------------------------------------------------------
+    avg_results = {
+        model_name: {
+            person_id: float(np.mean(accs))
+            for person_id, accs in persons.items()
+        }
+        for model_name, persons in collector.items()
     }
 
-    results = {}
-
-    for name, model in models.items():
-        if args.verbose:
-            print(f"\nTraining {name}...")
-
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-
-        results[name] = {}
-
-        for pid in range(N_PERSONS):
-            mask = pid_test == pid
-            cm = sklearn.metrics.confusion_matrix(
-                y_test[mask],
-                y_pred[mask],
-                labels=[0, 1],
-            )
-            results[name][f"person_{pid}"] = cm.tolist()
-
-            if args.verbose:
-                print(f"{name} – person {pid} confusion matrix:\n{cm}")
-
-    # Optional save
     out_dir = ROOT / "src/results/attribute_inference"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "age_confusion_matrices.json"
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=4)
 
-    print(f"\nSaved results to {out_path}")
+    out_path = out_dir / f"age_accuracy_{args.path_inversor}.json"
+    with open(out_path, "w") as f:
+        json.dump(avg_results, f, indent=4)
+
+    print(f"\nSaved averaged results to {out_path}")

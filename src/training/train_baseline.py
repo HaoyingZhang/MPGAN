@@ -375,6 +375,7 @@ def train_inverse(
     lr_G=2e-4,
     mp_norm=True,
     embedding_mp=True,
+    fill_value=100.0
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
@@ -412,7 +413,7 @@ def train_inverse(
                 mp_input_batch = build_mp_embedding_batch(
                     mpd_batch,
                     mpi_batch,
-                    fill_value=100.0
+                    fill_value=fill_value
                 )   
 
             # Skip empty batches
