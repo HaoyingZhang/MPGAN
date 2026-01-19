@@ -9,6 +9,7 @@ os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
 from scipy import stats
 from dataloader import MemmapDataset
+import wfdb
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
@@ -113,6 +114,13 @@ def blockify_mp(mp_array, window_len):
 
     return blocks
 
+def normalize_ts(ts):
+    min_v = ts.min()
+    max_v = ts.max()
+    if max_v == min_v:
+        return np.zeros_like(ts)
+    return (ts - min_v) / (max_v - min_v)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
     parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
@@ -124,18 +132,15 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--plot", action="store_true", help="Plot the original time series and the solutions (default: False)")
     parser.add_argument("-k", type=float, default = 1.0, help="Focus on optimizing the top k percent small distance, default : the original objective function")
     parser.add_argument("-g_model", type=str, default = "lstm", help="Choose the G model")
-    parser.add_argument("-d_model", type=str, default = "lstm", help="Choose the D model")
     parser.add_argument("-obj_func", type=str, default = "relu", help="Define the objective function used in the training")
     parser.add_argument("-alpha", type=float, default = 0.05, help="Define the parameter used in exponential objective function")
     parser.add_argument("-pi_mp", type=float, default = 0.05, help="Define the coefficient of the condition loss")
-    parser.add_argument("-pi_adv", type=float, default = 0.05, help="Define the coefficient of the adversary loss")
     parser.add_argument("-pi_mse", type=float, default = 0.05, help="Define the coefficient of the original MSE loss")
     parser.add_argument("-pi_pcc", type=float, default = 0.05, help="Define the coefficient of the original PCC loss")
     parser.add_argument("-pi_grad", type=float, default = 0.05, help="Define the coefficient of the original Temporal Gradiant loss")
     parser.add_argument("-latent", "--enable_latent", action="store_true", help="Latent dimension")
     parser.add_argument("-mp_norm", "--enable_mp_norm", action="store_true", help="Enable normalized MP in input")
     parser.add_argument("-lr_g", type=float, default=1e-5, help="Learning rate for Generator")
-    parser.add_argument("-lr_d", type=float, default=1e-5, help="Learning rate for Discriminator")
     parser.add_argument("-coeff_dist", type=float, default = 1.0, help="Define the coefficient of the distance loss in MP")
     parser.add_argument("-coeff_index", type=float, default = 1.0, help="Define the coefficient of the index loss in MP")
     parser.add_argument("-time", type=int, default = None, help="Time limit" )
@@ -164,12 +169,13 @@ if __name__ == "__main__":
     time_str = time.strftime("%Y-%m-%d_%H:%M:%S")
     train_epoch = int(args.e)
 
-    data_dir = "data/ecg/data_train_long"
-    files = sorted(glob.glob(os.path.join(data_dir, "ecg_*.dat")))
-    files_test = sorted(glob.glob(os.path.join("data/ecg/data_test_long", "ecg_*.dat")))
+    list_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
 
-    assert args.n_ts % 7 == 0
-    n_ts_per_person = args.n_ts // 7
+    data_dir = "data/physionet.org/files/ltdb/1.0.0/"
+    files = sorted([os.path.join(data_dir, str(list_patient[i])) for i in [0,1,2,3]])
+    files_test = sorted([os.path.join(data_dir, str(list_patient[i])) for i in [4,5,6]])
+
+    n_ts_per_person = args.n_ts // 4
 
     L = args.n - m + 1
     window_len = 100
@@ -196,27 +202,32 @@ if __name__ == "__main__":
     write_idx = 0
     batch_size = 64
 
+    np.random.seed(args.random_seed)
+
     for file in files:
-        ts_mm = np.memmap(file, dtype=np.float32, mode="r", shape=(1_000_000, args.n))
-        ts_mm = ts_mm[:n_ts_per_person]
+        record = wfdb.rdrecord(file)
+        signal = record.p_signal[:, 0]   # 1D ECG signal
 
-        for i in range(0, len(ts_mm), batch_size):
-            batch = ts_mm[i:i+batch_size]
+        max_start = len(signal) - args.n + 1
+        assert max_start > 0, "Signal shorter than window length"
 
-            for ts in batch:
-                # y
-                ts = normalize(ts)
-                y_train_mm[write_idx] = ts
+        indices_ts = np.random.randint(0, max_start, size=n_ts_per_person)
+        
+        for start_idx in indices_ts:
+            ts = signal[start_idx : start_idx + args.n]
 
-                # X (MP)
-                mp = MP_compute_single(
-                    ts, m,
-                    norm=args.enable_mp_norm,
-                    mpd_only=args.enable_mpd_only,
-                    znorm=args.znorm_mp
-                )
-                X_train_mm[write_idx] = mp
-                write_idx += 1
+            ts = normalize(ts)
+            y_train_mm[write_idx] = ts
+
+            mp = MP_compute_single(
+                ts, m,
+                norm=args.enable_mp_norm,
+                mpd_only=args.enable_mpd_only,
+                znorm=args.znorm_mp
+            )
+            X_train_mm[write_idx] = mp
+
+            write_idx += 1
 
     # generator = torch.Generator().manual_seed(args.random_seed)
     # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
@@ -299,17 +310,12 @@ if __name__ == "__main__":
                 dilations=(1,2,4,8,16,32),
                 use_attention=True,
                 z_dim=64 if args.enable_latent else None,
-                y_dim=None,         # or e.g. 10 if you have labels/classes
+                y_dim=None,       
                 use_in_proj=args.enable_inj_proj,
                 dropout=args.enable_drop_out
             )
     elif args.g_model == "transformer":
         G = G_Transformer(n=n, m=m, d_model=args.m, nhead=5)
-
-    if args.d_model == "lstm":
-        D_net = D(input_dim=1, hidden_dim=hidden_dim)
-    elif args.d_model == "pulse2pulse":
-        D_net = Pulse2pulseDiscriminator(num_channels=1)
 
     # 3. Train GAN
     model_save_path = f"src/results/baseline/{time_str}/"
@@ -347,23 +353,24 @@ if __name__ == "__main__":
     # test_loader = DataLoader(test_dataset, batch_size=16, shuffle=True)
     # Prepare inputs from original test indices
     y_test, y_test_full = [], []
-    for i in range(len(files_test)):
-        ts = np.memmap(
-            files_test[i],
-            dtype=np.float32,
-            mode="r",
-            shape=(100, 1000)
-        )                    # (T,) or (T,D)
-        ts = ts[:10]
-        T = ts.shape[1]
-        if T >= n:
-            ts_fixed = ts[:, :n]
-        else:
-            pad = np.zeros((ts.shape[0], n - T,), dtype=np.float32)
-            ts_fixed = np.concatenate([ts, pad], axis=1)
-        ts_fixed = normalize(ts_fixed)
-        y_test.append(ts_fixed)
-    y_test_full = np.concatenate(y_test, axis=0) 
+    test_indices = np.random
+    for file_test in files_test:
+        record = wfdb.rdrecord(file_test)
+        signal = record.p_signal[:, 0] 
+
+        max_start = len(signal) - args.n + 1
+        assert max_start > 0, "Signal shorter than window length"
+
+        indices_ts = np.random.randint(0, max_start, size=10)
+        
+        for start_idx in indices_ts:
+            ts = signal[start_idx : start_idx + args.n]
+
+            ts_fixed = normalize(ts)
+        
+            y_test_full.append(ts_fixed)
+
+    # y_test_full = np.concatenate(y_test, axis=0) 
     X_test_full = np.stack([
         MP_compute_single(
                 y_test_full[i], m,
