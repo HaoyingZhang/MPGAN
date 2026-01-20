@@ -129,6 +129,8 @@ if __name__ == "__main__":
     parser.add_argument("-e", type=int, default = 10, help="Number of epoches to train the network")
     parser.add_argument("-r", "--random_seed", type=int, default=None, help="Random seed used to generate the time series (default: None)")
     parser.add_argument("-c", "--category", type=str, default="theoretical", help="Category of the time series: 'theoretical', 'energy', or 'ecg' (default: 'theoretical')")
+    parser.add_argument("-train_id", "--train_id", type=int, nargs="+", help="IDs of persons used in the training set")
+    parser.add_argument("-test_id", "--test_id", type=int, nargs="+", help="IDs of persons used in the test set")
     parser.add_argument("-p", "--plot", action="store_true", help="Plot the original time series and the solutions (default: False)")
     parser.add_argument("-k", type=float, default = 1.0, help="Focus on optimizing the top k percent small distance, default : the original objective function")
     parser.add_argument("-g_model", type=str, default = "lstm", help="Choose the G model")
@@ -160,6 +162,7 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
+    max_index = 10800000 # TODO: define the max_start from all the ts 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
@@ -172,10 +175,13 @@ if __name__ == "__main__":
     list_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
 
     data_dir = "data/physionet.org/files/ltdb/1.0.0/"
-    files = sorted([os.path.join(data_dir, str(list_patient[i])) for i in [0,1,2,3]])
-    files_test = sorted([os.path.join(data_dir, str(list_patient[i])) for i in [4,5,6]])
+    files = sorted([os.path.join(data_dir, str(list_patient[i])) for i in args.train_id])
+    files_test = sorted([os.path.join(data_dir, str(list_patient[i])) for i in args.test_id])
 
-    n_ts_per_person = args.n_ts // 4
+    n_person_training = len(args.train_id)
+    n_person_test = len(args.test_id)
+    n_ts_per_person_train = args.n_ts // n_person_training
+    n_ts_per_person_test = 70 // n_person_test
 
     L = args.n - m + 1
     window_len = 100
@@ -203,17 +209,22 @@ if __name__ == "__main__":
     batch_size = 64
 
     np.random.seed(args.random_seed)
+    max_start = max_index - args.n + 1
+    assert max_start > 0, "Signal shorter than window length"
+
+    indices_ts = np.random.randint(0, max_start, size=n_ts_per_person_train+n_ts_per_person_test)
+    indices_ts_train = indices_ts[:n_ts_per_person_train]
+    indices_ts_test = indices_ts[n_ts_per_person_train:]
+    # print(files)
+    # print(files_test)
+    # print(indices_ts_train)
+    # print(indices_ts_test)
 
     for file in files:
         record = wfdb.rdrecord(file)
         signal = record.p_signal[:, 0]   # 1D ECG signal
-
-        max_start = len(signal) - args.n + 1
-        assert max_start > 0, "Signal shorter than window length"
-
-        indices_ts = np.random.randint(0, max_start, size=n_ts_per_person)
-        
-        for start_idx in indices_ts:
+        print(len(signal))
+        for start_idx in indices_ts_train:
             ts = signal[start_idx : start_idx + args.n]
 
             ts = normalize(ts)
@@ -357,13 +368,8 @@ if __name__ == "__main__":
     for file_test in files_test:
         record = wfdb.rdrecord(file_test)
         signal = record.p_signal[:, 0] 
-
-        max_start = len(signal) - args.n + 1
-        assert max_start > 0, "Signal shorter than window length"
-
-        indices_ts = np.random.randint(0, max_start, size=10)
         
-        for start_idx in indices_ts:
+        for start_idx in indices_ts_test:
             ts = signal[start_idx : start_idx + args.n]
 
             ts_fixed = normalize(ts)
