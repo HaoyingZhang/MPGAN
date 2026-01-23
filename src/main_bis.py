@@ -121,6 +121,17 @@ def normalize_ts(ts):
         return np.zeros_like(ts)
     return (ts - min_v) / (max_v - min_v)
 
+def _ensure_sparse_file(path: str, nbytes: int) -> None:
+    """
+    Create/resize a file to nbytes in a way that is typically sparse on Linux filesystems,
+    avoiding full zero-fill cost of np.memmap(mode="w+").
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        if nbytes > 0:
+            f.seek(nbytes - 1)
+            f.write(b"\0")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
     parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
@@ -162,7 +173,9 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    max_index = 10800000 # TODO: define the max_start from all the ts 
+    # 10800000
+    # 6420480
+    max_index = 6420480 # TODO: define the max_start from all the ts 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
@@ -191,19 +204,26 @@ if __name__ == "__main__":
         C = 2
 
     # Preallocate OUTPUT memmaps
-    X_train_mm = np.memmap(
-        "X_train.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(args.n_ts, L, C)
-    )
+    X_path = "X_train.dat"
+    y_path = "y_train.dat"
 
-    y_train_mm = np.memmap(
-        "y_train.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(args.n_ts, args.n)
-    )
+    shape_X = (args.n_ts, L, C)
+    shape_y = (args.n_ts, n)
+
+    nbytes_X = int(np.prod(shape_X)) * np.dtype(np.float32).itemsize
+    nbytes_y = int(np.prod(shape_y)) * np.dtype(np.float32).itemsize
+
+    _ensure_sparse_file(X_path, nbytes_X)
+    _ensure_sparse_file(y_path, nbytes_y)
+
+    X_train_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=shape_X)
+    y_train_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=shape_y)
+
+    # Optional: touch small part to ensure mapping OK
+    X_train_mm[0, 0, 0] = 0.0
+    y_train_mm[0, 0] = 0.0
+    X_train_mm.flush()
+    y_train_mm.flush()
 
     write_idx = 0
     batch_size = 64
