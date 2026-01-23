@@ -10,6 +10,7 @@ import stumpy
 from scipy import stats
 from dataloader import MemmapDataset
 import wfdb
+from concurrent.futures import ProcessPoolExecutor
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
@@ -121,16 +122,39 @@ def normalize_ts(ts):
         return np.zeros_like(ts)
     return (ts - min_v) / (max_v - min_v)
 
-def _ensure_sparse_file(path: str, nbytes: int) -> None:
-    """
-    Create/resize a file to nbytes in a way that is typically sparse on Linux filesystems,
-    avoiding full zero-fill cost of np.memmap(mode="w+").
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "wb") as f:
-        if nbytes > 0:
-            f.seek(nbytes - 1)
-            f.write(b"\0")
+def _process_index_batch(
+    signal,
+    indices,
+    start_row,
+    n, m,
+    enable_mp_norm,
+    enable_mpd_only,
+    znorm_mp,
+    X_path,
+    y_path,
+    shape_X,
+    shape_y,
+):
+    print(start_row)
+    X_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=shape_X)
+    y_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=shape_y)
+
+    row = start_row
+    for start_idx in indices:
+        ts = signal[start_idx : start_idx + n]
+        ts = normalize(ts).astype(np.float32, copy=False)
+
+        y_mm[row] = ts
+        X_mm[row] = MP_compute_single(
+            ts, m,
+            norm=enable_mp_norm,
+            mpd_only=enable_mpd_only,
+            znorm=znorm_mp
+        )
+        row += 1
+
+    X_mm.flush()
+    y_mm.flush()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
@@ -173,9 +197,7 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    # 10800000
-    # 6420480
-    max_index = 6420480 # TODO: define the max_start from all the ts 
+    max_index = 10800000 # TODO: define the max_start from all the ts 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
@@ -204,29 +226,21 @@ if __name__ == "__main__":
         C = 2
 
     # Preallocate OUTPUT memmaps
-    X_path = "X_train.dat"
-    y_path = "y_train.dat"
+    X_train_mm = np.memmap(
+        "X_train.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(args.n_ts, L, C)
+    )
 
-    shape_X = (args.n_ts, L, C)
-    shape_y = (args.n_ts, n)
+    y_train_mm = np.memmap(
+        "y_train.dat",
+        dtype=np.float32,
+        mode="w+",
+        shape=(args.n_ts, args.n)
+    )
 
-    nbytes_X = int(np.prod(shape_X)) * np.dtype(np.float32).itemsize
-    nbytes_y = int(np.prod(shape_y)) * np.dtype(np.float32).itemsize
-
-    _ensure_sparse_file(X_path, nbytes_X)
-    _ensure_sparse_file(y_path, nbytes_y)
-
-    X_train_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=shape_X)
-    y_train_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=shape_y)
-
-    # Optional: touch small part to ensure mapping OK
-    X_train_mm[0, 0, 0] = 0.0
-    y_train_mm[0, 0] = 0.0
-    X_train_mm.flush()
-    y_train_mm.flush()
-
-    write_idx = 0
-    batch_size = 64
+    print("allocation finished")
 
     np.random.seed(args.random_seed)
     max_start = max_index - args.n + 1
@@ -240,25 +254,47 @@ if __name__ == "__main__":
     # print(indices_ts_train)
     # print(indices_ts_test)
 
+    n_workers = min(os.cpu_count(), len(indices_ts_train))
+    index_batches = np.array_split(indices_ts_train, n_workers)
+    write_idx = 0
+    batch_size = 64
+
     for file in files:
         record = wfdb.rdrecord(file)
-        signal = record.p_signal[:, 0]   # 1D ECG signal
+        signal = record.p_signal[:, 0].astype(np.float32, copy=False)
         print(len(signal))
-        for start_idx in indices_ts_train:
-            ts = signal[start_idx : start_idx + args.n]
 
-            ts = normalize(ts)
-            y_train_mm[write_idx] = ts
+        base_row = write_idx  # starting row for this file
 
-            mp = MP_compute_single(
-                ts, m,
-                norm=args.enable_mp_norm,
-                mpd_only=args.enable_mpd_only,
-                znorm=args.znorm_mp
-            )
-            X_train_mm[write_idx] = mp
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            futures = []
+            offset = 0
 
-            write_idx += 1
+            for batch in index_batches:
+                futures.append(
+                    ex.submit(
+                        _process_index_batch,
+                        signal=signal,
+                        indices=batch,
+                        start_row=base_row + offset,
+                        n=args.n,
+                        m=m,
+                        enable_mp_norm=args.enable_mp_norm,
+                        enable_mpd_only=args.enable_mpd_only,
+                        znorm_mp=args.znorm_mp,
+                        X_path="X_train.dat",
+                        y_path="y_train.dat",
+                        shape_X=(args.n_ts, L, C),
+                        shape_y=(args.n_ts, args.n),
+                    )
+                )
+                offset += len(batch)
+
+            for f in futures:
+                f.result()  # propagate exceptions
+
+        write_idx += len(indices_ts_train)
+
 
     # generator = torch.Generator().manual_seed(args.random_seed)
     # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
