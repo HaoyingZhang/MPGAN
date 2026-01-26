@@ -116,6 +116,8 @@ def blockify_mp(mp_array, window_len):
     return blocks
 
 def normalize_ts(ts):
+    if ts.size == 0 or ts.shape[0] != args.n:
+        return
     min_v = ts.min()
     max_v = ts.max()
     if max_v == min_v:
@@ -135,7 +137,6 @@ def _process_index_batch(
     shape_X,
     shape_y,
 ):
-    print(start_row)
     X_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=shape_X)
     y_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=shape_y)
 
@@ -197,14 +198,14 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    max_index = 10800000 # TODO: define the max_start from all the ts 
+    max_index = 6420480 # TODO: define the max_start from all the ts 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
-    time = datetime.now()
-    time_str = time.strftime("%Y-%m-%d_%H:%M:%S")
+    time_start = datetime.now()
+    time_str = time_start.strftime("%Y-%m-%d_%H:%M:%S")
     train_epoch = int(args.e)
 
     list_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
@@ -216,7 +217,7 @@ if __name__ == "__main__":
     n_person_training = len(args.train_id)
     n_person_test = len(args.test_id)
     n_ts_per_person_train = args.n_ts // n_person_training
-    n_ts_per_person_test = 70 // n_person_test
+    n_ts_per_person_test = 70
 
     L = args.n - m + 1
     window_len = 100
@@ -226,76 +227,112 @@ if __name__ == "__main__":
         C = 2
 
     # Preallocate OUTPUT memmaps
-    X_train_mm = np.memmap(
-        "X_train.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(args.n_ts, L, C)
-    )
+    X_path = "X_train.dat"
+    y_path = "y_train.dat"
 
-    y_train_mm = np.memmap(
-        "y_train.dat",
-        dtype=np.float32,
-        mode="w+",
-        shape=(args.n_ts, args.n)
-    )
+    X_shape = (args.n_ts, L, C)
+    y_shape = (args.n_ts, args.n)
+
+    X_expected_bytes = np.prod(X_shape) * np.dtype(np.float32).itemsize
+    y_expected_bytes = np.prod(y_shape) * np.dtype(np.float32).itemsize
+
+
+    def memmap_or_create(path, shape, dtype):
+        file_exist = False
+        expected_bytes = np.prod(shape) * np.dtype(dtype).itemsize
+
+        if os.path.exists(path):
+            actual_bytes = os.path.getsize(path)
+
+            if actual_bytes == expected_bytes:
+                print(f"[✓] Reusing existing memmap: {path}")
+                file_exist = True
+                return np.memmap(path, dtype=dtype, mode="r+", shape=shape), file_exist
+            else:
+                print(
+                    f"[!] Size mismatch for {path}: "
+                    f"expected {expected_bytes}, got {actual_bytes}. Recreating."
+                )
+                os.remove(path)
+
+        print(f"[+] Creating memmap: {path}")
+        return np.memmap(path, dtype=dtype, mode="w+", shape=shape),file_exist
+
+
+    X_train_mm, X_train_exist = memmap_or_create(X_path, X_shape, np.float32)
+    y_train_mm, y_train_exist = memmap_or_create(y_path, y_shape, np.float32)
 
     print("allocation finished")
 
     np.random.seed(args.random_seed)
-    max_start = max_index - args.n + 1
+    rng = np.random.default_rng(args.random_seed)
+    max_start = max_index - n + 1
     assert max_start > 0, "Signal shorter than window length"
 
-    indices_ts = np.random.randint(0, max_start, size=n_ts_per_person_train+n_ts_per_person_test)
+    n_samples = n_ts_per_person_test + n_ts_per_person_train
+    max_possible = max_index // n
+
+    if n_samples > max_possible:
+        print("Not enough room for spaced sampling, overlapped time series will be used")
+        indices_ts = np.random.randint(0, max_start, size=n_samples)
+    else:
+        print("No overlapped time series used")
+        candidates = np.arange(0, max_start, n, dtype=np.int64)
+        indices_ts = rng.choice(candidates, size=n_samples, replace=False)
+
     indices_ts_train = indices_ts[:n_ts_per_person_train]
     indices_ts_test = indices_ts[n_ts_per_person_train:]
+    
     # print(files)
     # print(files_test)
     # print(indices_ts_train)
     # print(indices_ts_test)
 
-    n_workers = min(os.cpu_count(), len(indices_ts_train))
-    index_batches = np.array_split(indices_ts_train, n_workers)
-    write_idx = 0
-    batch_size = 64
+    if (not X_train_exist) and (not y_train_exist):
 
-    for file in files:
-        record = wfdb.rdrecord(file)
-        signal = record.p_signal[:, 0].astype(np.float32, copy=False)
-        print(len(signal))
+        n_workers = min(os.cpu_count(), len(indices_ts_train))
+        index_batches = np.array_split(indices_ts_train, n_workers)
+        write_idx = 0
 
-        base_row = write_idx  # starting row for this file
+        for file in files:
+            record = wfdb.rdrecord(file)
+            signal = record.p_signal[:, 0].astype(np.float32, copy=False)
+            print(len(signal))
 
-        with ProcessPoolExecutor(max_workers=n_workers) as ex:
-            futures = []
-            offset = 0
+            base_row = write_idx  # starting row for this file
 
-            for batch in index_batches:
-                futures.append(
-                    ex.submit(
-                        _process_index_batch,
-                        signal=signal,
-                        indices=batch,
-                        start_row=base_row + offset,
-                        n=args.n,
-                        m=m,
-                        enable_mp_norm=args.enable_mp_norm,
-                        enable_mpd_only=args.enable_mpd_only,
-                        znorm_mp=args.znorm_mp,
-                        X_path="X_train.dat",
-                        y_path="y_train.dat",
-                        shape_X=(args.n_ts, L, C),
-                        shape_y=(args.n_ts, args.n),
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                futures = []
+                offset = 0
+
+                for batch in index_batches:
+                    futures.append(
+                        ex.submit(
+                            _process_index_batch,
+                            signal=signal,
+                            indices=batch,
+                            start_row=base_row + offset,
+                            n=args.n,
+                            m=m,
+                            enable_mp_norm=args.enable_mp_norm,
+                            enable_mpd_only=args.enable_mpd_only,
+                            znorm_mp=args.znorm_mp,
+                            X_path="X_train.dat",
+                            y_path="y_train.dat",
+                            shape_X=(args.n_ts, L, C),
+                            shape_y=(args.n_ts, args.n),
+                        )
                     )
-                )
-                offset += len(batch)
+                    offset += len(batch)
 
-            for f in futures:
-                f.result()  # propagate exceptions
+                for f in futures:
+                    f.result()  # propagate exceptions
 
-        write_idx += len(indices_ts_train)
+            write_idx += len(indices_ts_train)
 
-
+    loading_time = time.time() - time_start
+    print(f"Time loading the training data: {loading_time} seconds")
+    batch_size = 64
     # generator = torch.Generator().manual_seed(args.random_seed)
     # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
     train_dataset = MemmapDataset(
