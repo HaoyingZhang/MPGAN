@@ -183,6 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("-znorm", "--znorm_mp", action="store_true", help="Using z-normalized Euclidean distance in MP computing")
     parser.add_argument("-mp_embedding", "--enable_mp_embedding", action="store_true", help="Using matrix embedding for the MP input")
     parser.add_argument("-fill", "--fill_value", type=float, default = 100.0, help="The value to fill in the MP embedding")
+    parser.add_argument("-val", "--enable_validation", action="store_true", help="Use validation set in training")
 
     args = parser.parse_args()
 
@@ -193,7 +194,7 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    max_index = 6420480 # TODO: define the max_start from all the ts 
+    max_index = 10828800 # TODO: define the max_start from all the ts 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
@@ -224,8 +225,8 @@ if __name__ == "__main__":
         C = 2
 
     # Preallocate OUTPUT memmaps
-    X_path = "X_train.dat"
-    y_path = "y_train.dat"
+    X_path = "X_train_n1000.dat"
+    y_path = "y_train_n1000.dat"
 
     X_shape = (args.n_ts, L, C)
     y_shape = (args.n_ts, args.n)
@@ -329,53 +330,55 @@ if __name__ == "__main__":
     loading_time = time.time() - time_start_dataset
     print(f"Time loading the training data: {loading_time} seconds")
     batch_size = 64
-    # generator = torch.Generator().manual_seed(args.random_seed)
-    # train_set, val_set, test_set = random_split(X_full, [10*n_ts//14, 2*n_ts//14, 2*n_ts//14], generator=generator)
-    train_dataset = MemmapDataset(
-        "X_train.dat",
-        "y_train.dat",
+    
+    full_train_dataset = MemmapDataset(
+        X_path,
+        y_path,
         shape_X=(args.n_ts, L, C),
         shape_y=(args.n_ts, args.n)
     )
+    if args.enable_validation:
+        # Split sizes
+        n_total = len(full_train_dataset)
+        n_val = int(0.3 * n_total)
+        n_train = n_total - n_val
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True
-    )
-    print(f"Training set length: {len(train_dataset)}")
-    # print(f"Validation set length: {len(val_set.indices)}")
+        # Deterministic split (recommended)
+        generator = torch.Generator().manual_seed(args.random_seed)
 
-    # Convert Subset -> Tensor
+        train_dataset, val_dataset = random_split(
+            full_train_dataset,
+            [n_train, n_val],
+            generator=generator
+        )
 
-    # Train and test tensors
-    # train_tensor = torch.stack([torch.tensor(X_train_full[i], dtype=torch.float32) 
-    #                             for i in train_set.indices])
-    # train_tensor = train_tensor.view(train_tensor.size(0), -1)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
 
-    # val_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
-    #                             for i in test_set.indices])
-    # val_tensor = val_tensor.view(val_tensor.size(0), -1)
-
-    # test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
-    #                             for i in test_set.indices])
-    # test_tensor = test_tensor.view(test_tensor.size(0), -1)
-
-    # Train and test labels
-    # train_labels = torch.stack([torch.tensor(y_train_full[i], dtype=torch.float32) 
-    #                             for i in train_set.indices])
-    # val_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
-    #                             for i in test_set.indices])
-    # test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
-    #                             for i in test_set.indices])
-
-    # train_dataset = TensorDataset(train_tensor, train_labels)
-    # train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-
-    # val_dataset = TensorDataset(val_tensor, val_labels)
-    # val_loader = DataLoader(val_dataset, batch_size=16, shuffle=True)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+        print(f"Training set length: {len(train_dataset)}")
+        print(f"Validation set length: {len(val_dataset)}")
+    else:
+        train_loader = DataLoader(
+            full_train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+        val_loader = None
+        print(f"Training set length: {len(full_train_dataset)}")
 
     # Initialize model hyperparameters
     batch_size, n_input, window_len = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
@@ -422,8 +425,8 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
-    G, G_loss, MP_loss, TS_loss, best_g_loss = train_inverse(train_loader,
-                                                None, 
+    G, G_loss, VAL_G_loss, best_val_loss = train_inverse(train_loader,
+                                                val_loader, 
                                                  G, 
                                                  device=device, 
                                                  checkpoint_path=model_save_path, 

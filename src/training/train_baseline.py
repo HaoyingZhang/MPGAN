@@ -355,7 +355,7 @@ class TemporalGradientLoss(nn.Module):
 
 def train_inverse(
     train_loader,
-    val_loader,   # kept for compatibility but unused
+    val_loader, 
     G,
     device='cuda',
     checkpoint_path="tmp.pth",
@@ -379,88 +379,86 @@ def train_inverse(
 ):
     os.makedirs(checkpoint_path, exist_ok=True)
 
-    # Move model once
     G = G.to(device)
-
-    # optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, weight_decay=5e-4)
     optimizer_G = torch.optim.Adam(G.parameters(), lr=lr_G, betas=(0.5, 0.9))
-
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer_G, mode='min', factor=0.5
+        optimizer_G, mode="min", factor=0.5
     )
-    # loss_fn_ts = nn.SmoothL1Loss(beta=0.1)
+
     loss_fn_pcc = PearsonR2Loss()
     loss_fn_grad = TemporalGradientLoss()
-    
-    best_g_loss = float('inf')
-    G_loss, MP_loss, TS_loss, MSE_loss, PCC_loss, GRAD_loss = [], [], [], [], [], []
+
+    best_loss = float("inf")
+
+    # ===== traces =====
+    traces = {
+        "train_G": [],
+        "train_MP": [],
+        "train_TS": [],
+        "train_MSE": [],
+        "train_PCC": [],
+        "train_GRAD": [],
+        "val_G": [],
+        "val_TS": [],
+        "val_MSE": [],
+        "val_PCC": [],
+        "val_GRAD": [],
+    }
 
     start_time = time.time()
 
     for ep in range(epoch):
         if time.time() - start_time >= time_limit:
-            print(f"⏱️  Stopping early at epoch {ep} (time limit).")
+            print(f"⏱️ Stopping early at epoch {ep}")
             break
 
+        # ===========================
+        # TRAIN
+        # ===========================
         G.train()
-        epoch_g, epoch_mp, epoch_ts, epoch_mse, epoch_pcc, epoch_grad = [], [], [], [], [], []
+        ep_g, ep_mp, ep_ts = [], [], []
+        ep_mse, ep_pcc, ep_grad = [], [], []
 
         for mp_input_batch, time_series_batch in train_loader:
+
             if embedding_mp:
-                mpd_batch = mp_input_batch[..., 0]   # [B, L]
-                mpi_batch = mp_input_batch[..., 1]   # [B, L]
-
                 mp_input_batch = build_mp_embedding_batch(
-                    mpd_batch,
-                    mpi_batch,
+                    mp_input_batch[..., 0],
+                    mp_input_batch[..., 1],
                     fill_value=fill_value
-                )   
+                )
 
-            # Skip empty batches
             if mp_input_batch.size(0) == 0:
                 continue
 
-            # Move to device
-            mp_input_batch    = mp_input_batch.to(device)
+            mp_input_batch = mp_input_batch.to(device)
             time_series_batch = time_series_batch.to(device)
 
-            # --- Generator forward --- #
             if latent:
-                z = torch.randn(mp_input_batch.size(0), 64, device=device) if getattr(G, "z_dim", None) else None
-                fake_for_g = G(mp_input_batch, z=z)
+                z = (
+                    torch.randn(mp_input_batch.size(0), 64, device=device)
+                    if getattr(G, "z_dim", None)
+                    else None
+                )
+                fake = G(mp_input_batch, z=z)
             else:
-                fake_for_g = G(mp_input_batch)
+                fake = G(mp_input_batch)
 
-            fake_for_g = normalize(fake_for_g)
-            
+            fake = normalize(fake)
 
-            # list for MP loss
-            fake_series_tensor = fake_for_g  
-            fake_series_list = fake_for_g.unbind(0)
+            ts_mse = ((fake - time_series_batch) ** 2).mean()
+            ts_pcc = loss_fn_pcc(fake, time_series_batch)
+            ts_grad = loss_fn_grad(fake, time_series_batch)
 
-            # real_ts_tensor = time_series_batch.squeeze(-1)
+            ts_loss = (
+                pi_mse * ts_mse +
+                pi_pcc * ts_pcc +
+                pi_grad * ts_grad
+            )
 
-            # TS loss
-            if pi_mse > 0:
-                ts_mse = ((fake_series_tensor - time_series_batch) ** 2).mean()
-            else:
-                ts_mse = torch.tensor(0.0, device=device)
-            if pi_pcc > 0:
-                ts_pcc = loss_fn_pcc(fake_series_tensor, time_series_batch)
-            else:
-                ts_pcc = torch.tensor(0.0, device=device)
-            if pi_grad > 0:
-                ts_grad = loss_fn_grad(fake_series_tensor, time_series_batch)
-            else:
-                ts_grad = torch.tensor(0.0, device=device)
-
-            ts_loss = pi_mse * ts_mse + pi_pcc * ts_pcc + pi_grad * ts_grad
-            
-
-            # MP loss
             if pi_mp > 0:
                 mp_loss = objective_function_unified(
-                    x_list=fake_series_list,
+                    x_list=fake.unbind(0),
                     mp_batch=mp_input_batch,
                     m=mp_window_size,
                     norm=mp_norm,
@@ -480,44 +478,85 @@ def train_inverse(
             g_loss.backward()
             optimizer_G.step()
 
-            epoch_mp.append(mp_loss.item())
-            epoch_g.append(g_loss.item())
-            epoch_ts.append(ts_loss.item())
-            epoch_pcc.append(ts_pcc.item())
-            epoch_mse.append(ts_mse.item())
-            epoch_grad.append(ts_grad.item())
+            ep_g.append(g_loss.item())
+            ep_mp.append(mp_loss.item())
+            ep_ts.append(ts_loss.item())
+            ep_mse.append(ts_mse.item())
+            ep_pcc.append(ts_pcc.item())
+            ep_grad.append(ts_grad.item())
 
-        # per-epoch stats
-        G_loss.append(float(np.mean(epoch_g)) if epoch_g else float("nan"))
-        MP_loss.append(float(np.mean(epoch_mp)) if epoch_mp else float("nan"))
-        TS_loss.append(float(np.mean(epoch_ts)) if epoch_ts else float("nan"))
-        MSE_loss.append(float(np.mean(epoch_mse)) if epoch_mse else float("nan"))
-        PCC_loss.append(float(np.mean(epoch_pcc)) if epoch_pcc else float("nan"))
-        GRAD_loss.append(float(np.mean(epoch_grad)) if epoch_grad else float("nan"))
+        # aggregate train
+        for k, v in zip(
+            ["train_G","train_MP","train_TS","train_MSE","train_PCC","train_GRAD"],
+            [ep_g, ep_mp, ep_ts, ep_mse, ep_pcc, ep_grad]
+        ):
+            traces[k].append(float(np.mean(v)))
+
+        # ===========================
+        # VALIDATION (optional)
+        # ===========================
+        if val_loader is not None:
+            G.eval()
+            v_ts, v_mse, v_pcc, v_grad = [], [], [], []
+
+            with torch.no_grad():
+                for mp_input_batch, time_series_batch in val_loader:
+
+                    if embedding_mp:
+                        mp_input_batch = build_mp_embedding_batch(
+                            mp_input_batch[..., 0],
+                            mp_input_batch[..., 1],
+                            fill_value=fill_value
+                        )
+
+                    mp_input_batch = mp_input_batch.to(device)
+                    time_series_batch = time_series_batch.to(device)
+
+                    fake = normalize(G(mp_input_batch))
+
+                    ts_mse = ((fake - time_series_batch) ** 2).mean()
+                    ts_pcc = loss_fn_pcc(fake, time_series_batch)
+                    ts_grad = loss_fn_grad(fake, time_series_batch)
+
+                    ts_loss = (
+                        pi_mse * ts_mse +
+                        pi_pcc * ts_pcc +
+                        pi_grad * ts_grad
+                    )
+
+                    v_ts.append(ts_loss.item())
+                    v_mse.append(ts_mse.item())
+                    v_pcc.append(ts_pcc.item())
+                    v_grad.append(ts_grad.item())
+
+            traces["val_TS"].append(float(np.mean(v_ts)))
+            traces["val_MSE"].append(float(np.mean(v_mse)))
+            traces["val_PCC"].append(float(np.mean(v_pcc)))
+            traces["val_GRAD"].append(float(np.mean(v_grad)))
+            traces["val_G"].append(traces["val_TS"][-1])
+
+            monitor_loss = traces["val_G"][-1]
+        else:
+            monitor_loss = traces["train_G"][-1]
+
+        # ===========================
+        # SCHEDULER + CHECKPOINT
+        # ===========================
+        scheduler.step(monitor_loss)
+
+        if monitor_loss < best_loss:
+            best_loss = monitor_loss
+            torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
+            print(f"✅ Saved best model (epoch {ep+1}, loss={best_loss:.4f})")
 
         print(
-            f"Epoch {ep+1}: "
-            f"mp={MP_loss[-1]:.4f}, "
-            f"mse loss={MSE_loss[-1]:.4f}, "
-            f"pcc loss={PCC_loss[-1]:.4f}, "
-            f"ts={TS_loss[-1]:.4f}, "
-            f"G={G_loss[-1]:.4f}"
+            f"Epoch {ep+1} | "
+            f"Train G={traces['train_G'][-1]:.4f} | "
+            f"{'Val G='+str(round(traces['val_G'][-1],4)) if val_loader else 'No Val'}"
         )
 
-        # Step scheduler on training G loss
-        scheduler.step(G_loss[-1])
+        pd.DataFrame(traces).to_csv(
+            os.path.join(checkpoint_path, "loss.csv"), index=False
+        )
 
-        # ✅ checkpoint best G according to G_loss
-        if G_loss[-1] < best_g_loss:
-            best_g_loss = G_loss[-1]
-            torch.save(G.state_dict(), os.path.join(checkpoint_path, "best_model.pth"))
-            print(f"✅ Saved best G (epoch {ep+1}, G_loss={best_g_loss:.4f})")
-
-        # log losses
-        pd.DataFrame({
-            "train_mp": MP_loss,
-            "train_ts": TS_loss,
-            "train_G": G_loss,
-        }).to_csv(os.path.join(checkpoint_path, "loss.csv"), index=False)
-
-    return G, G_loss, MP_loss, TS_loss, best_g_loss
+    return G, traces, best_loss
