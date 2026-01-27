@@ -11,6 +11,7 @@ from scipy import stats
 from dataloader import MemmapDataset
 import wfdb
 from concurrent.futures import ProcessPoolExecutor
+import time
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
@@ -131,31 +132,25 @@ def _process_index_batch(
     n, m,
     enable_mp_norm,
     enable_mpd_only,
-    znorm_mp,
-    X_path,
-    y_path,
-    shape_X,
-    shape_y,
+    znorm_mp
 ):
-    X_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=shape_X)
-    y_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=shape_y)
+    X_batch = []
+    y_batch = []
 
-    row = start_row
     for start_idx in indices:
         ts = signal[start_idx : start_idx + n]
         ts = normalize(ts).astype(np.float32, copy=False)
 
-        y_mm[row] = ts
-        X_mm[row] = MP_compute_single(
+        mp = MP_compute_single(
             ts, m,
             norm=enable_mp_norm,
             mpd_only=enable_mpd_only,
             znorm=znorm_mp
         )
-        row += 1
+        y_batch.append(ts)
+        X_batch.append(mp)
 
-    X_mm.flush()
-    y_mm.flush()
+    return start_row, np.stack(X_batch), np.stack(y_batch)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
@@ -206,6 +201,8 @@ if __name__ == "__main__":
 
     time_start = datetime.now()
     time_str = time_start.strftime("%Y-%m-%d_%H:%M:%S")
+    
+    time_start_dataset = time.time()
     train_epoch = int(args.e)
 
     list_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
@@ -292,16 +289,15 @@ if __name__ == "__main__":
 
         n_workers = min(os.cpu_count(), len(indices_ts_train))
         index_batches = np.array_split(indices_ts_train, n_workers)
-        write_idx = 0
+        
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            write_idx = 0
 
-        for file in files:
-            record = wfdb.rdrecord(file)
-            signal = record.p_signal[:, 0].astype(np.float32, copy=False)
-            print(len(signal))
+            for file in files:
+                record = wfdb.rdrecord(file)
+                signal = record.p_signal[:, 0].astype(np.float32, copy=False)
+                print(len(signal))
 
-            base_row = write_idx  # starting row for this file
-
-            with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = []
                 offset = 0
 
@@ -311,26 +307,26 @@ if __name__ == "__main__":
                             _process_index_batch,
                             signal=signal,
                             indices=batch,
-                            start_row=base_row + offset,
+                            start_row=write_idx + offset,
                             n=args.n,
                             m=m,
                             enable_mp_norm=args.enable_mp_norm,
                             enable_mpd_only=args.enable_mpd_only,
-                            znorm_mp=args.znorm_mp,
-                            X_path="X_train.dat",
-                            y_path="y_train.dat",
-                            shape_X=(args.n_ts, L, C),
-                            shape_y=(args.n_ts, args.n),
+                            znorm_mp=args.znorm_mp
                         )
                     )
                     offset += len(batch)
 
                 for f in futures:
-                    f.result()  # propagate exceptions
+                    start_row, X_batch, y_batch = f.result()
+                    X_train_mm[start_row:start_row+len(X_batch)] = X_batch
+                    y_train_mm[start_row:start_row+len(y_batch)] = y_batch
+                X_train_mm.flush()
+                y_train_mm.flush()
+                
+                write_idx += len(indices_ts_train)
 
-            write_idx += len(indices_ts_train)
-
-    loading_time = time.time() - time_start
+    loading_time = time.time() - time_start_dataset
     print(f"Time loading the training data: {loading_time} seconds")
     batch_size = 64
     # generator = torch.Generator().manual_seed(args.random_seed)
