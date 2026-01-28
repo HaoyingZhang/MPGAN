@@ -102,6 +102,10 @@ def MP_compute_single(
     ts = np.array(ts, dtype=np.float64)
 
     profile = stumpy.stump(ts, m=m, normalize=znorm)
+
+    if not norm and not mpd_only and not embedding:
+        return profile.astype(np.float32, copy=False)
+    
     if norm:
         mpd, mpi = normalized_MP(profile)
     else:
@@ -112,7 +116,7 @@ def MP_compute_single(
         if embedding:
             line = build_mp_embedding(mpd, mpi, fill_value = fill_value)
         else:
-            line = [[mpd[i], mpi[i]] for i in range(len(mpd))]
+            line = np.column_stack((mpd, mpi.astype(np.float32))).astype(np.float32)
     else:
         line = blockify_mp_unit(mpd)
     return line
