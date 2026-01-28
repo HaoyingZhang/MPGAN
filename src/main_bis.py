@@ -225,8 +225,8 @@ if __name__ == "__main__":
         C = 2
 
     # Preallocate OUTPUT memmaps
-    X_path = "X_train_n1000.dat"
-    y_path = "y_train_n1000.dat"
+    X_path = "X_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
+    y_path = "y_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
 
     X_shape = (args.n_ts, L, C)
     y_shape = (args.n_ts, args.n)
