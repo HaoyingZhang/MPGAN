@@ -237,28 +237,35 @@ if __name__ == "__main__":
 
     def memmap_or_create(path, shape, dtype):
         file_exist = False
+        appending = False
         expected_bytes = np.prod(shape) * np.dtype(dtype).itemsize
 
         if os.path.exists(path):
             actual_bytes = os.path.getsize(path)
 
-            if actual_bytes == expected_bytes:
+            if actual_bytes >= expected_bytes:
                 print(f"[✓] Reusing existing memmap: {path}")
                 file_exist = True
-                return np.memmap(path, dtype=dtype, mode="r+", shape=shape), file_exist
+                return np.memmap(path, dtype=dtype, mode="r+", shape=shape), file_exist, appending, 0
             else:
                 print(
                     f"[!] Size mismatch for {path}: "
-                    f"expected {expected_bytes}, got {actual_bytes}. Recreating."
+                    f"expected {expected_bytes}, got {actual_bytes}. Appending."
                 )
-                os.remove(path)
+                file_exist = True
+                appending = True
+                if len(shape) == 3:
+                    nb_sample_exist = actual_bytes / ((np.dtype(dtype).itemsize)*shape[1]*shape[2])
+                else:
+                    nb_sample_exist = actual_bytes / ((np.dtype(dtype).itemsize)*shape[1])
+                return np.memmap(path, dtype=dtype, mode="r+", shape=shape), file_exist, appending, nb_sample_exist
+                # os.remove(path)
 
         print(f"[+] Creating memmap: {path}")
-        return np.memmap(path, dtype=dtype, mode="w+", shape=shape),file_exist
+        return np.memmap(path, dtype=dtype, mode="w+", shape=shape),file_exist, appending, 0
 
-
-    X_train_mm, X_train_exist = memmap_or_create(X_path, X_shape, np.float32)
-    y_train_mm, y_train_exist = memmap_or_create(y_path, y_shape, np.float32)
+    X_train_mm, X_train_exist, X_train_appending, nb_samples_exist = memmap_or_create(X_path, X_shape, np.float32)
+    y_train_mm, y_train_exist, y_train_appending, nb_samples_exist = memmap_or_create(y_path, y_shape, np.float32)
 
     print("allocation finished")
 
@@ -286,13 +293,21 @@ if __name__ == "__main__":
     # print(indices_ts_train)
     # print(indices_ts_test)
 
-    if (not X_train_exist) and (not y_train_exist):
-
-        n_workers = min(os.cpu_count(), len(indices_ts_train))
-        index_batches = np.array_split(indices_ts_train, n_workers)
+    if ((not X_train_exist) and (not y_train_exist)) or (X_train_appending and y_train_appending): 
+        nb_samples_exist_per_person = nb_samples_exist // n_ts_per_person_train
+        if (X_train_appending and y_train_appending):
+            indices_ts_train = indices_ts_train[int(nb_samples_exist_per_person):]
+            n_workers = min(os.cpu_count(), len(indices_ts_train))
+            index_batches = np.array_split(indices_ts_train, n_workers)
+            write_idx = int(nb_samples_exist)
+        else:
+            n_workers = min(os.cpu_count(), len(indices_ts_train))
+            index_batches = np.array_split(indices_ts_train, n_workers)
+            write_idx = 0
+        print(len(indices_ts_train))
         
         with ProcessPoolExecutor(max_workers=n_workers) as ex:
-            write_idx = 0
+            # write_idx = 0 my old indicator
 
             for file in files:
                 record = wfdb.rdrecord(file)
@@ -325,7 +340,7 @@ if __name__ == "__main__":
                 X_train_mm.flush()
                 y_train_mm.flush()
                 
-                write_idx += len(indices_ts_train)
+                write_idx += offset
 
     loading_time = time.time() - time_start_dataset
     print(f"Time loading the training data: {loading_time} seconds")
