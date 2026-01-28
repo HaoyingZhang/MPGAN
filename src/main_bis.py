@@ -425,7 +425,7 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
-    G, G_loss, VAL_G_loss, best_val_loss = train_inverse(train_loader,
+    G, G_loss, best_val_loss = train_inverse(train_loader,
                                                 val_loader, 
                                                  G, 
                                                  device=device, 

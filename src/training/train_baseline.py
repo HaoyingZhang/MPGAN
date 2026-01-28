@@ -537,6 +537,11 @@ def train_inverse(
 
             monitor_loss = traces["val_G"][-1]
         else:
+            traces["val_TS"].append(np.nan)
+            traces["val_MSE"].append(np.nan)
+            traces["val_PCC"].append(np.nan)
+            traces["val_GRAD"].append(np.nan)
+            traces["val_G"].append(np.nan)
             monitor_loss = traces["train_G"][-1]
 
         # ===========================
