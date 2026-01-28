@@ -517,10 +517,11 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(model_save_path, "time_series.png"))
     plt.close()
 
+    save_args(args, model_save_path, "config.json")
 
     # 7. Plot the loss curves
     # d_loss_list_np = np.array(d_loss_list)
-    g_loss_list_np = np.array(G_loss)
+    g_loss_list_np = np.array(G_loss['train_G'])
     plt.figure(figsize=(8, 5))
     # plt.plot(d_loss_list, label="Discriminator Loss", marker='o')
     plt.plot(g_loss_list_np, label="Generator Loss", marker='x')
@@ -532,5 +533,4 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig(os.path.join(model_save_path, "loss.png"))
     plt.close()
-
-    save_args(args, model_save_path, "config.json")
+    
