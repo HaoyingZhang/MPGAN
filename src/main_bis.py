@@ -194,7 +194,9 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    max_index = 10828800 # TODO: define the max_start from all the ts 
+    max_index_list = [10828800, 6420480, 10997760, 9454080, 9753600, 10252800, 10237440]
+    max_index = np.min([max_index_list[ind] for ind in args.train_id])
+    print(max_index)
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
 
