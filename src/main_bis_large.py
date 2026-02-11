@@ -145,14 +145,14 @@ def _process_index_batch(
     return start_row, np.stack(X_batch), np.stack(y_batch)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
+    parser = argparse.ArgumentParser(description='===== Inverse with the given Matrix Profile =====')
     parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
     parser.add_argument("-n", type=int, required=True, help="Length of the considered time series")
     parser.add_argument("-m", type=int, required=True, help="Subsequence length for the Matrix Profile")
     parser.add_argument("-e", type=int, default = 10, help="Number of epoches to train the network")
     parser.add_argument("-r", "--random_seed", type=int, default=None, help="Random seed used to generate the time series (default: None)")
     parser.add_argument("-c", "--category", type=str, default="theoretical", help="Category of the time series: 'theoretical', 'energy', or 'ecg' (default: 'theoretical')")
-    parser.add_argument("-train_id", "--train_id", type=int, nargs="+", help="IDs of persons used in the training set")
+    parser.add_argument("-train_id", "--train_id", type=int, nargs="+", help="IDs of persons used in the training set between 0 to 451")
     parser.add_argument("-test_id", "--test_id", type=int, nargs="+", help="IDs of persons used in the test set")
     parser.add_argument("-p", "--plot", action="store_true", help="Plot the original time series and the solutions (default: False)")
     parser.add_argument("-k", type=float, default = 1.0, help="Focus on optimizing the top k percent small distance, default : the original objective function")
@@ -186,11 +186,14 @@ if __name__ == "__main__":
 
     m = args.m
     n = args.n
-    max_index_list = [10828800, 6420480, 10997760, 9454080, 9753600, 10252800, 10237440]
-    max_index = np.min([max_index_list[ind] for ind in args.train_id])
-    print(max_index)
+
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
+    
+    max_train_index = 5000 * 104
+    max_test_index_list = [10828800, 6420480, 10997760, 9454080, 9753600, 10252800, 10237440]
+    max_test_index = np.min([max_test_index_list[ind] for ind in args.test_id])
+    print(max_test_index)
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -200,15 +203,24 @@ if __name__ == "__main__":
     time_start_dataset = time.time()
     train_epoch = int(args.e)
 
-    list_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
+    list_test_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
 
-    data_dir = "data/physionet.org/files/ltdb/1.0.0/"
-    files = sorted([os.path.join(data_dir, str(list_patient[i])) for i in args.train_id])
-    files_test = sorted([os.path.join(data_dir, str(list_patient[i])) for i in args.test_id])
-
-    n_person_training = len(args.train_id)
+    data_train_dir = "data/physionet.org/files/ecg-arrhythmia/1.0.0/"
+    data_test_dir = "data/physionet.org/files/ltdb/1.0.0/"
+    with open(os.path.join(data_train_dir, "RECORDS"),"r") as f:
+        list_train_patient = [line.strip() for line in f.readlines()]
+    files = sorted([os.path.join(data_train_dir, str(id)) for id in list_train_patient])[args.train_id[0]:args.train_id[1]]
+    print(len(files))
+    files_test = sorted([os.path.join(data_test_dir, str(list_test_patient[i])) for i in args.test_id])
+    
+    n_person_training = len(files)
     n_person_test = len(args.test_id)
     n_ts_per_person_train = args.n_ts // n_person_training
+    print(n_ts_per_person_train)
+    if n_ts_per_person_train > max_train_index - args.n + 1 :
+        raise ValueError(f"Need more person, no enough data")
+    if n_ts_per_person_train == 0 :
+        raise ValueError(f"Too much person")
     n_ts_per_person_test = 70
 
     L = args.n - m + 1
@@ -257,11 +269,11 @@ if __name__ == "__main__":
 
     np.random.seed(args.random_seed)
     rng = np.random.default_rng(args.random_seed)
-    max_start = max_index - n + 1
+    max_start = max_train_index - n + 1
     assert max_start > 0, "Signal shorter than window length"
 
     n_samples = n_ts_per_person_test + n_ts_per_person_train
-    max_possible = max_index // n
+    max_possible = max_train_index // n
 
     if n_samples > max_possible:
         print("Not enough room for spaced sampling, overlapped time series will be used")
