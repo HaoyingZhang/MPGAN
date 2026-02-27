@@ -193,7 +193,6 @@ if __name__ == "__main__":
     max_train_index = 5000 * 104
     max_test_index_list = [10828800, 6420480, 10997760, 9454080, 9753600, 10252800, 10237440]
     max_test_index = np.min([max_test_index_list[ind] for ind in args.test_id])
-    print(max_test_index)
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -210,13 +209,12 @@ if __name__ == "__main__":
     with open(os.path.join(data_train_dir, "RECORDS"),"r") as f:
         list_train_patient = [line.strip() for line in f.readlines()]
     files = sorted([os.path.join(data_train_dir, str(id)) for id in list_train_patient])[args.train_id[0]:args.train_id[1]]
-    print(len(files))
     files_test = sorted([os.path.join(data_test_dir, str(list_test_patient[i])) for i in args.test_id])
     
     n_person_training = len(files)
     n_person_test = len(args.test_id)
     n_ts_per_person_train = args.n_ts // n_person_training
-    print(n_ts_per_person_train)
+    print(f"Number of ts per person : {n_ts_per_person_train}")
     if n_ts_per_person_train > max_train_index - args.n + 1 :
         raise ValueError(f"Need more person, no enough data")
     if n_ts_per_person_train == 0 :
@@ -291,19 +289,22 @@ if __name__ == "__main__":
     # print(indices_ts_train)
     # print(indices_ts_test)
 
-    if ((not X_train_exist) and (not y_train_exist)): 
+    if (not y_train_exist): 
         y_train = []
         
         for file in files:
             record = wfdb.rdrecord(file)
             signal = record.p_signal[:, 0].astype(np.float32, copy=False)
-            print(len(signal))
 
             for start_idx in indices_ts_train:
                 ts = signal[start_idx : start_idx + n]
                 ts_norm = normalize(ts).astype(np.float32, copy=False)
                 y_train.append(ts_norm)
         print("Finishing loading the ts data")
+        y_train_mm[:] = np.array(y_train, dtype=np.float32)
+        y_train_mm.flush()
+    
+    if (not X_train_exist):
         X_train = np.stack([
             MP_compute_single(
                     y_train[i], m,
@@ -316,10 +317,7 @@ if __name__ == "__main__":
             ])
         
         X_train_mm[:] = X_train
-        y_train_mm[:] = np.array(y_train, dtype=np.float32)
-
         X_train_mm.flush()
-        y_train_mm.flush()
         
     loading_time = time.time() - time_start_dataset
     print(f"Time loading the training data: {loading_time} seconds")
