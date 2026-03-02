@@ -446,7 +446,7 @@ if __name__ == "__main__":
     y_test, y_test_full = [], []
     test_indices = np.random
     for file_test in files_test:
-        record = wfdb.rdrecord(file_test)
+        record = wfdb.rdrecord(os.path.join(data_test_dir, file_test))
         signal = record.p_signal[:, 0] 
         
         for start_idx in indices_ts_test:
