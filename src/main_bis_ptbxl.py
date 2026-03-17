@@ -177,6 +177,7 @@ if __name__ == "__main__":
     parser.add_argument("-mp_embedding", "--enable_mp_embedding", action="store_true", help="Using matrix embedding for the MP input")
     parser.add_argument("-fill", "--fill_value", type=float, default = 100.0, help="The value to fill in the MP embedding")
     parser.add_argument("-val", "--enable_validation", action="store_true", help="Use validation set in training")
+    parser.add_argument("-n_val", type=int, default=1000, help="Number of validation time series (non-overlapping, starting at signal position 20000)")
 
     args = parser.parse_args()
 
@@ -267,16 +268,15 @@ if __name__ == "__main__":
     max_start = max_train_index - n + 1
     assert max_start > 0, "Signal shorter than window length"
 
-    n_samples = 2*n_ts_per_person_train
     max_possible = max_train_index // n
 
-    if n_samples > max_possible:
+    if n_ts_per_person_train > max_possible:
         print("Not enough room for spaced sampling, overlapped time series will be used")
-        indices_ts = np.random.randint(0, max_start, size=n_samples)
+        indices_ts = np.random.randint(0, max_start, size=n_ts_per_person_train)
     else:
         print("No overlapped time series used")
         candidates = np.arange(0, max_start, n, dtype=np.int64)
-        indices_ts = rng.choice(candidates, size=n_samples, replace=False)
+        indices_ts = rng.choice(candidates, size=n_ts_per_person_train, replace=False)
 
     indices_ts_train = indices_ts[:n_ts_per_person_train]
     indices_ts_test = indices_ts[n_ts_per_person_train:]
@@ -325,48 +325,72 @@ if __name__ == "__main__":
         shape_X=(args.n_ts, L, C),
         shape_y=(args.n_ts, args.n)
     )
+    train_loader = DataLoader(
+        full_train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True
+    )
+    print(f"Training set length: {len(full_train_dataset)}")
+
+    # ===== Validation set: n_val non-overlapping random time series from test patients (signal [0, 1000)) =====
     if args.enable_validation:
-        # Split sizes
-        n_total = len(full_train_dataset)
-        n_val = int(0.3 * n_total)
-        n_train = n_total - n_val
+        n_person_val = len(files_test)
+        n_val_per_person = args.n_val // n_person_val
+        if n_val_per_person == 0:
+            raise ValueError(f"n_val={args.n_val} too small for {n_person_val} test persons")
+        val_candidates = np.arange(0, max_train_index - n + 1, n, dtype=np.int64)
+        if n_val_per_person > len(val_candidates):
+            raise ValueError(f"Not enough non-overlapping positions in [0, {max_train_index}) for {n_val_per_person} samples/person")
+        indices_val = rng.choice(val_candidates, size=n_val_per_person, replace=False)
+        n_val_total = n_person_val * n_val_per_person
+        print(f"Validation: {n_val_per_person} samples/person × {n_person_val} test persons = {n_val_total} total")
 
-        # Deterministic split (recommended)
-        generator = torch.Generator().manual_seed(args.random_seed)
+        X_val_path = "X_val_n"+str(n)+"_m"+str(m)+"_p"+str(args.test_id)+".dat"
+        y_val_path = "y_val_n"+str(n)+"_m"+str(m)+"_p"+str(args.test_id)+".dat"
 
-        train_dataset, val_dataset = random_split(
-            full_train_dataset,
-            [n_train, n_val],
-            generator=generator
+        X_val_mm, X_val_exist = memmap_or_create(X_val_path, (n_val_total, L, C), np.float32)
+        y_val_mm, y_val_exist = memmap_or_create(y_val_path, (n_val_total, args.n), np.float32)
+
+        if (not X_val_exist) or (not y_val_exist):
+            y_val_list = []
+            for file in files_test:
+                record = wfdb.rdrecord(os.path.join(data_test_dir, file))
+                signal = record.p_signal[:, 0].astype(np.float32, copy=False)
+                for start_idx in indices_val:
+                    ts = signal[start_idx : start_idx + n]
+                    y_val_list.append(normalize(ts).astype(np.float32, copy=False))
+            X_val_arr = np.stack([
+                MP_compute_single(
+                    y_val_list[i], m,
+                    norm=args.enable_mp_norm,
+                    mpd_only=args.enable_mpd_only,
+                    znorm=args.znorm_mp,
+                    fill_value=args.fill_value
+                )
+                for i in range(len(y_val_list))
+            ])
+            X_val_mm[:] = X_val_arr
+            y_val_mm[:] = np.array(y_val_list, dtype=np.float32)
+            X_val_mm.flush()
+            y_val_mm.flush()
+
+        val_dataset = MemmapDataset(
+            X_val_path, y_val_path,
+            shape_X=(n_val_total, L, C),
+            shape_y=(n_val_total, args.n)
         )
-
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True
-        )
-
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=False,
             num_workers=4,
             pin_memory=True
         )
-        print(f"Training set length: {len(train_dataset)}")
         print(f"Validation set length: {len(val_dataset)}")
     else:
-        train_loader = DataLoader(
-            full_train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True
-        )
         val_loader = None
-        print(f"Training set length: {len(full_train_dataset)}")
 
     # Initialize model hyperparameters
     batch_size, n_input, window_len = next(iter(train_loader))[0].shape  # n_input = 2*(n-m+1)
@@ -440,49 +464,25 @@ if __name__ == "__main__":
     G = G.cpu()
     # 4. Generate samples
     G.eval()
-    # test_dataset = TensorDataset(test_tensor, test_labels)
-    # test_loader = DataLoader(test_dataset, batch_size=16, shuffle=True)
-    # Prepare inputs from original test indices
-    y_test, y_test_full = [], []
-    test_indices = np.random
-    for file_test in files_test:
-        record = wfdb.rdrecord(os.path.join(data_test_dir, file_test))
-        signal = record.p_signal[:, 0] 
-        
-        for start_idx in indices_ts_test:
-            ts = signal[start_idx : start_idx + args.n]
 
-            ts_fixed = normalize(ts)
-        
-            y_test_full.append(ts_fixed)
-
-    # y_test_full = np.concatenate(y_test, axis=0) 
-    X_test_full = np.stack([
-        MP_compute_single(
-                y_test_full[i], m,
-                norm=args.enable_mp_norm,
-                mpd_only=args.enable_mpd_only,
-                znorm=args.znorm_mp,
-                embedding=args.enable_mp_embedding,
+    if args.enable_validation:
+        plot_tensor = torch.tensor(X_val_mm[:], dtype=torch.float32)
+        if args.enable_mp_embedding:
+            plot_tensor = build_mp_embedding_batch(
+                plot_tensor[..., 0],
+                plot_tensor[..., 1],
                 fill_value=args.fill_value
             )
-            for i in range(len(y_test_full))
-        ])
-    test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
-                                for i in range(len(X_test_full))])
-    test_labels = torch.stack([torch.tensor(y_test_full[i], dtype=torch.float32) 
-                                for i in range(len(y_test_full))])
-    with torch.no_grad():
-        if args.enable_latent:
-            z = torch.randn(test_tensor.size(0), 64, device='cpu') if G.z_dim else None
-            fake_data = G(test_tensor, z=z)
-        else:
-            fake_data = G(test_tensor)
-    #fake_data = normalize(fake_data)
-    test_file_names = ["ecg_"+str(i) for i in range(len(X_test_full))]
-    # Plot results
-    if args.plot:
-        plot_res(model_save_path, test_labels, fake_data, test_file_names, args.m, args.znorm_mp)
+        plot_labels = torch.tensor(y_val_mm[:], dtype=torch.float32)
+        with torch.no_grad():
+            if args.enable_latent:
+                z = torch.randn(plot_tensor.size(0), 64, device='cpu') if G.z_dim else None
+                fake_data = G(plot_tensor, z=z)
+            else:
+                fake_data = G(plot_tensor)
+        plot_file_names = ["ecg_val_"+str(i) for i in range(len(plot_tensor))]
+        if args.plot:
+            plot_res(model_save_path, plot_labels, fake_data, plot_file_names, args.m, args.znorm_mp)
     
     # 5. Evaluate Utility: Matrix Profile
     # utility_score = np.mean([compute_matrix_profile_distance(real_x.squeeze(), fake_x.squeeze()) for real_x, fake_x in zip(test_set, fake_data)])
@@ -493,17 +493,18 @@ if __name__ == "__main__":
     # print(f"🔒 MIA Attack Accuracy (higher = less private): {mia_score:.4f}")
 
     # Plot the first feature (D=1 assumed) or slice index 0
-    plt.figure(figsize=(5, 12))
-    for i in range(5):
-        plt.subplot(5, 1, i + 1)
-        plt.plot(fake_data[i, :], label=f"Fake Sample {i}")
-        plt.plot(normalize(test_labels[i]), label=f"Real Sample {i}")
-        plt.legend()
-        plt.tight_layout()
+    if args.enable_validation:
+        plt.figure(figsize=(5, 12))
+        for i in range(5):
+            plt.subplot(5, 1, i + 1)
+            plt.plot(fake_data[i, :].detach().numpy(), label=f"Fake Sample {i}")
+            plt.plot(normalize(plot_labels[i].numpy()), label=f"Real Sample {i}")
+            plt.legend()
+            plt.tight_layout()
 
-    plt.suptitle("Generated Time Series (First Feature)", fontsize=16, y=1.02)
-    plt.savefig(os.path.join(model_save_path, "time_series.png"))
-    plt.close()
+        plt.suptitle("Generated Time Series (First Feature)", fontsize=16, y=1.02)
+        plt.savefig(os.path.join(model_save_path, "time_series.png"))
+        plt.close()
 
     save_args(args, model_save_path, "config.json")
 

@@ -303,12 +303,30 @@ def conformal_prediction(n,m, base_folder, n_ts, train_id):
     return(rank)
 
 if __name__ == "__main__":
-    for id_person in range(4,7):
-        rank_0 = conformal_prediction(200, 10, f"src/results/baseline/n200m10/disable_validation/person{id_person}", 20000, [id_person])
-        np.save(f"outputs/n200m10/disable_validation/rank_{id_person}.npy", rank_0)
-        plot_rank_distribution(rank_0, f"outputs/n200m10/disable_validation/conformal_{id_person}.png", title=f"Rank Distribution for person {id_person}")
-
-    # for id_p in range(7):
+    # for id_person in range(1,2):
+    #     rank_0 = conformal_prediction(200, 10, f"src/results/baseline/n500m100/person{id_person}", 20000, [id_person])
+    #     np.save(f"outputs/n200m10/disable_validation/rank_{id_person}.npy", rank_0)
+    #     plot_rank_distribution(rank_0, f"outputs/n200m10/disable_validation/conformal_{id_person}.png", title=f"Rank Distribution for person {id_person}")
+    # base_test_folder = "src/results/baseline/2026-02-12_23:48:26"
+    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-03-04_10:10:37"
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
+    print(f"PCC mean : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    print(f"PCC 0.7 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
+    print(f"PCC max : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    print(f"Partial PCC 0.7 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
+    print(f"RMSE : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
+    print(f"RMSE 0.1 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
+    print(f"RMSE min : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
+    print(f"Partial RMSE 0.1 : {loss_test}")
+    
+    # for id_p in range(1):
     #     print(f"person{id_p}")
     #     base_test_folder = f"src/results/baseline/n200m10/disable_validation/person{id_p}"
     #     loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
