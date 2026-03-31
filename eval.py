@@ -19,8 +19,10 @@ def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, sta
             res_file = os.path.join(eval_folder, "results.json")
             with open(res_file) as json_data:
                 d = json.load(json_data)
-                ts_original = np.array(d["data"])
-                ts_fake = np.array(d["fake_data"])
+                ts_original = np.array(d["time_series"])
+                # ts_original = np.array(d["data"])
+                ts_fake = np.array(d["solutions"][0])
+                # ts_fake = np.array(d["fake_data"])
                 if loss_function.__name__ == "partial_pearson_correlation":
                     loss = loss_function(ts_original, ts_fake, m=m)
                 elif (loss_function.__name__ == "partial_pearson_correlation") or (loss_function.__name__ == "partial_rmse"):
@@ -308,7 +310,10 @@ if __name__ == "__main__":
     #     np.save(f"outputs/n200m10/disable_validation/rank_{id_person}.npy", rank_0)
     #     plot_rank_distribution(rank_0, f"outputs/n200m10/disable_validation/conformal_{id_person}.png", title=f"Rank Distribution for person {id_person}")
     # base_test_folder = "src/results/baseline/2026-02-12_23:48:26"
-    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-03-04_10:10:37"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-03-04_10:10:37"
+    # base_test_folder = "src/results/baseline/2026-03-19_01:02:19/"
+    # base_test_folder = "test/results/2026-03-30_10:54:17"
+    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/arrhythmia/"
     loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
     print(f"PCC mean : {loss_test}")
     loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")

@@ -9,7 +9,25 @@ import torch
 from src.utils_matrix_profile import normalize, build_mp_embedding
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
 from sklearn.metrics import roc_auc_score
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.neighbors import KNeighborsClassifier
 from ecgdetectors import Detectors
+import pandas as pd
+from ecg_features import extract_ecg_features_bis
+import pandas as pd
+from tsfresh import extract_features, select_features
+from tsfresh.utilities.dataframe_functions import impute
+import stumpy
+
+
+def ts_to_tsfresh_df(ts, ts_id=0):
+    return pd.DataFrame({
+        'id':    ts_id,
+        'time':  np.arange(len(ts)),
+        'value': np.asarray(ts, dtype=np.float64),
+    })
 
 def pearson_correlation(x, y, threshold=None):
     """Compute the Pearson correlation between two time series x and y."""
@@ -150,7 +168,7 @@ def ecg_singling_score(ts, fs=150):
     def _sig(x, center, scale=5.0):
         return 1.0 / (1.0 + np.exp(-scale * (x - center)))
 
-    f = extract_ecg_features(ts, fs)
+    f = extract_ecg_features_bis(ts, fs)
     gates = [
         _sig(f['kurtosis'],           center=3.5,  scale=2.0),        # Fisher excess kurtosis > 2 ↔ Pearson > 5 (noise-free ECG threshold)
         # _sig(f['psd_ratio'],          center=0.80, scale=10.0),        # ≥80 % power in AHA 0.5–40 Hz band
@@ -505,6 +523,125 @@ def reidentification_attack(candidates, reference_pool, fs=150, top_k=None):
     return results[:top_k] if top_k else results
 
 
+def train_reidentification_classifier(list_of_ts, fs=150, classifier=None):
+    """
+    Train a re-identification classifier from a list of time-series groups.
+
+    Each element ``list_of_ts[i]`` is a sequence of 1-D time series that all
+    belong to identity *i*.  The function extracts ``extract_ecg_features``
+    for every series, stacks them into a feature matrix, and fits a
+    ``StandardScaler + classifier`` pipeline.
+
+    Parameters
+    ----------
+    list_of_ts : list[list[array-like]]
+        Outer list indexed by person/class (index = class label).
+        Inner list contains one or more 1-D time series for that person.
+    fs         : int
+        Sampling frequency in Hz passed to ``extract_ecg_features``.
+    classifier : sklearn estimator, optional
+        Any estimator with a ``fit(X, y)`` interface.  Defaults to
+        ``SVC(kernel='rbf', C=10, gamma='scale', probability=True)``.
+        Examples::
+
+            KNeighborsClassifier(n_neighbors=1)                        # 1-NN
+            SVC(kernel='rbf', C=10, gamma='scale', probability=True)  # RBF-SVM (default)
+
+    Returns
+    -------
+    pipeline     : sklearn.pipeline.Pipeline  (StandardScaler + classifier)
+    feature_keys : list[str]
+    metadata     : dict  — ``{'X': np.ndarray, 'y': np.ndarray}``
+
+    Example
+    -------
+    >>> from sklearn.neighbors import KNeighborsClassifier
+    >>> groups = [[ts_person0_a, ts_person0_b], [ts_person1_a], ...]
+    >>> pipeline, keys, meta = train_reidentification_classifier(
+    ...     groups, fs=150, classifier=KNeighborsClassifier(n_neighbors=1))
+    >>> feats = extract_ecg_features(new_ts, fs=150)
+    >>> x_new = np.array([[feats[k] for k in keys]])
+    >>> label = pipeline.predict(x_new)[0]
+    """
+    if classifier is None:
+        print("No classifier is passed, using SVM")
+        classifier = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+
+    X_rows, y_rows = [], []
+    feature_keys = None
+
+    for class_idx, ts_group in enumerate(list_of_ts):
+        for ts in ts_group:
+            feats = extract_ecg_features_bis(np.asarray(ts, dtype=np.float64), fs=fs)
+            if feature_keys is None:
+                feature_keys = list(feats.keys())
+            X_rows.append([feats[k] for k in feature_keys])
+            y_rows.append(class_idx)
+
+    X = np.array(X_rows, dtype=np.float64)
+    y = np.array(y_rows, dtype=np.int64)
+
+    # Replace any NaN/Inf with column medians so the classifier never sees bad values
+    for col in range(X.shape[1]):
+        bad = ~np.isfinite(X[:, col])
+        if bad.any():
+            median = np.nanmedian(X[~bad, col]) if not np.all(bad) else 0.0
+            X[bad, col] = median
+
+    pipeline = Pipeline([
+        ('scaler',     StandardScaler()),
+        ('classifier', classifier),
+    ])
+    pipeline.fit(X, y)
+
+    return pipeline, feature_keys, {'X': X, 'y': y}
+
+
+def reidentification_svm(list_of_ts, fs=150, svm_kwargs=None):
+    """Backward-compatible wrapper around train_reidentification_classifier with SVC."""
+    if svm_kwargs is None:
+        svm_kwargs = {'kernel': 'rbf', 'C': 10, 'gamma': 'scale', 'probability': True}
+    return train_reidentification_classifier(
+        list_of_ts, fs=fs, classifier=SVC(**svm_kwargs)
+    )
+
+def reidentification_tsfresh(ts_list_train, ts_list_test, fs=150, classifier=None):
+    # For a list of time series:
+    dfs_train = [ts_to_tsfresh_df(ts, i) for i, ts in enumerate(ts_list_train)]
+    df_train_all = pd.concat(dfs_train, ignore_index=True)
+
+    dfs_test = [ts_to_tsfresh_df(ts, i) for i, ts in enumerate(ts_list_test)]
+    df_test_all = pd.concat(dfs_test, ignore_index=True)
+
+    X_train = extract_features(df_train_all, column_id='id', column_sort='time', column_value='value')
+    impute(X_train)  # fill NaN
+    y_train = np.arange(X_train.shape[0])
+    # X_train_selected = select_features(X_train, y_train)
+    # selected_cols = X_train_selected.columns
+    # print(f"Number of features : {len(selected_cols)}")
+    X_train_selected = X_train
+    selected_cols = X_train.columns
+
+    # Train and evaluate
+    if classifier is None:
+        print("No classifier is passed, using SVM")
+        classifier = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+
+    pipeline = Pipeline([
+        ('scaler',     StandardScaler()),
+        ('classifier', classifier),
+    ])
+    pipeline.fit(X_train_selected, y_train)
+
+    # On test data
+    X_test = extract_features(df_test_all, column_id='id', column_sort='time', column_value='value')
+    impute(X_test)
+    X_test_selected = X_test[selected_cols]  # apply same selection — no y_test used
+    y_test = pipeline.predict(X_test_selected)
+
+    return pipeline, selected_cols, {'X': X_test, 'y': y_test}
+
+
 def evaluate_reidentification_phase1(results, true_indices, k=None):
     """Same as evaluate_reidentification but uses phase1 score for AUC (no reference pool)."""
     true_set = set(true_indices)
@@ -593,68 +730,89 @@ def _load_candidates(root, victim):
             with open(json_path) as f:
                 data = json.load(f)
             idx = len(candidates)
-            candidates.append(np.array(data["fake_data"], dtype=np.float64))
+            candidates.append(np.array(data["data"], dtype=np.float64))
             if person_dir == victim:
                 true_indices.append(idx)
     return candidates, true_indices
 
 
 if __name__ == "__main__":
-    base_root = "src/results/baseline/n500m100"
-    all_persons = sorted(
-        [d for d in os.listdir(base_root) if os.path.isdir(os.path.join(base_root, d))]
-    )
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print per-test-patient attribution breakdown")
+    parser.add_argument("--mp", action="store_true", help="Use MP to reidentify")
+    parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset")
+    parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
+    args = parser.parse_args()
+
+    if args.ipopt:
+        if args.dataset == "arrhythmia":
+            base_root = "src/results/ipopt/arrhythmia/"
+        else:
+            base_root = "src/results/ipopt/ptbxl/"
+            # base_root = "src/results/ipopt/ptbxl/ptbxl_rescale"
+    else:
+        if args.dataset == "arrhythmia":
+            base_root = "test/results/ecg_arrhythmia/"
+        else:
+            base_root = "src/results/baseline/2026-03-04_10:10:37/"
+    print(f"Evaluating database {args.dataset} under base root {base_root}")
+    # all_persons = sorted(
+    #     [d for d in os.listdir(base_root) if os.path.isdir(os.path.join(base_root, d))]
+    # )
+    # print(f"Length of people in base root: {len(all_persons)}")
 
     # ------------------------------------------------------------------ #
-    # Multi-person evaluation — Orphanidou quality filter                 #
+    # Method 1 – Multi-person evaluation — Orphanidou quality filter      #
     # ------------------------------------------------------------------ #
     # Step 1: run the filter for every person and collect raw results
-    per_person = {}   # victim -> {'pred': set, 'true': set, 'total': int}
-    for victim in all_persons:
-        root = os.path.join(base_root, victim)
-        candidates, true_indices = _load_candidates(root, victim)
+    # per_person = {}   # victim -> {'pred': set, 'true': set, 'total': int}
+    # for victim in all_persons:
+    #     root = os.path.join(base_root, victim)
+    #     candidates, true_indices = _load_candidates(root, victim)
 
-        results_orp = reidentification_attack_orphanidou(
-            candidates, reference_pool=None, fs=128,
-            template_corr_threshold=0.7,
-        )
-        pred_set  = {r['index'] for r in results_orp if r['phase1'] == 1.0}
-        per_person[victim] = {
-            'pred':  pred_set,
-            'true':  set(true_indices),
-            'total': len(candidates),
-        }
-        print(f"{victim}: {len(pred_set)} / {len(candidates)} predicted ECG-like")
+    #     results_orp = reidentification_attack_orphanidou(
+    #         candidates, reference_pool=None, fs=128,
+    #         template_corr_threshold=0.7,
+    #     )
+    #     pred_set  = {r['index'] for r in results_orp if r['phase1'] == 1.0}
+    #     per_person[victim] = {
+    #         'pred':  pred_set,
+    #         'true':  set(true_indices),
+    #         'total': len(candidates),mp_window_size
+    #     }
+    #     print(f"{victim}: {len(pred_set)} / {len(candidates)} predicted ECG-like")
 
-    # Step 2: for each person, remove indices that also appear in another
-    #         person's predicted_positive (ambiguous — claimed by multiple persons)
-    print("\n--- After cross-person deduplication ---")
-    for victim in all_persons:
-        other_preds = set().union(*(
-            per_person[v]['pred'] for v in all_persons if v != victim
-        ))
-        dedup_pred = per_person[victim]['pred'] - other_preds
-        print(dedup_pred)
+    # # Step 2: for each person, remove indices that also appear in another
+    # #         person's predicted_positive (ambiguous — claimed by multiple persons)
+    # print("\n--- After cross-person deduplication ---")
+    # for victim in all_persons:
+    #     other_preds = set().union(*(
+    #         per_person[v]['pred'] for v in all_persons if v != victim
+    #     ))
+    #     dedup_pred = per_person[victim]['pred'] - other_preds
+    #     print(dedup_pred)
 
-        true_set = per_person[victim]['true']
-        total    = per_person[victim]['total']
+    #     true_set = per_person[victim]['true']
+    #     total    = per_person[victim]['total']
 
-        tp  = len(dedup_pred & true_set)
-        fp  = len(dedup_pred - true_set)
-        fn  = len(true_set - dedup_pred)
-        tn  = total - tp - fp - fn
+    #     tp  = len(dedup_pred & true_set)
+    #     fp  = len(dedup_pred - true_set)
+    #     fn  = len(true_set - dedup_pred)
+    #     tn  = total - tp - fp - fn
 
-        precision = tp / (tp + fp)     if (tp + fp) > 0 else 0.0
-        recall    = tp / (tp + fn)     if (tp + fn) > 0 else 0.0
-        f1        = 2*precision*recall / (precision+recall) if (precision+recall) > 0 else 0.0
-        accuracy  = (tp + tn) / total  if total > 0 else 0.0
+    #     precision = tp / (tp + fp)     if (tp + fp) > 0 else 0.0
+    #     recall    = tp / (tp + fn)     if (tp + fn) > 0 else 0.0
+    #     f1        = 2*precision*recall / (precision+recall) if (precision+recall) > 0 else 0.0
+    #     accuracy  = (tp + tn) / total  if total > 0 else 0.0
 
-        print(f"\n{victim}  (deduplicated pred={len(dedup_pred)}, removed={len(per_person[victim]['pred'])-len(dedup_pred)})")
-        print(f"  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
-        print(f"  precision : {precision:.4f}")
-        print(f"  recall    : {recall:.4f}")
-        print(f"  f1        : {f1:.4f}")
-        print(f"  accuracy  : {accuracy:.4f}")
+    #     print(f"\n{victim}  (deduplicated pred={len(dedup_pred)}, removed={len(per_person[victim]['pred'])-len(dedup_pred)})")
+    #     print(f"  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
+    #     print(f"  precision : {precision:.4f}")
+    #     print(f"  recall    : {recall:.4f}")
+    #     print(f"  f1        : {f1:.4f}")
+    #     print(f"  accuracy  : {accuracy:.4f}")
 
     # ------------------------------------------------------------------ #
     # Method 2 – original soft singling-out score (commented out)        #
@@ -668,3 +826,247 @@ if __name__ == "__main__":
     # print("\nRe-identification (phase 1 only, no reference pool):")
     # for key, val in metrics.items():
     #     print(f"  {key}: {val:.4f}" if isinstance(val, float) else f"  {key}: {val}")
+
+    # ------------------------------------------------------------------ #
+    # Method 3 – Re-identification via SVM trained on real ECG reference  #
+    # ------------------------------------------------------------------ #
+    # Build reference pool: one list of ECGs per PTB-XL subject (attacker's data).
+    # reidentification_svm expects list[list[array]] — outer index = person class.
+    if args.dataset == "ptbxl":
+        list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
+        files = sorted(list_patient[21000:21200])
+
+    elif args.dataset=="arrhythmia":
+        with open("data/physionet.org/files/ecg-arrhythmia/records100/RECORDS", "r") as f:
+            list_patient = f.read().splitlines()
+        files = [os.path.join("data/physionet.org/files/ecg-arrhythmia/records100/", file+".npy") for file in list_patient]
+
+    ref_attacker = []   # shape: (n_subjects,) each containing [ts]
+    for file in files:
+        if args.dataset == "ptbxl":
+            record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
+            signal = record.p_signal[:, 0].astype(np.float64)
+        if args.dataset == "arrhythmia":
+            signal = np.load(file)
+        
+        ts = normalize(signal[:500])
+        if args.mp:
+            mp = stumpy.stump(ts, m=100)
+            ts = np.concatenate([mp[:, 0], mp[:, 1]])
+        ref_attacker.append([ts])   # wrap in list: one sample per subject
+
+    # Choose classifier — swap comment to switch model:
+    # clf = KNeighborsClassifier(n_neighbors=1)           # 1-NN
+    clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True)  # RBF-SVM
+
+    pipeline, feature_keys, metadata = train_reidentification_classifier(
+        ref_attacker, fs=100, classifier=clf
+    )
+    print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects, "
+          f"{len(feature_keys)} features.")
+
+    if args.dataset == "arrhythmia":
+        test_ids = list(range(0, 48))
+    elif args.dataset == "ptbxl":
+        test_ids   = list(range(21000, 21200))
+    n_patients = len(test_ids)
+
+    # Build test set: flat structure — base_root/ecg_{N}/results.json
+    ecg_dirs = sorted(
+        [d for d in os.listdir(base_root) if d.startswith("ecg_")],
+        key=lambda x: int(x.split("_")[1]),
+    )
+
+    X_test_rows, test_labels = [], []
+    for idx, ecg_dir in enumerate(ecg_dirs):
+        json_path = os.path.join(base_root, ecg_dir, "results.json")
+        if not os.path.exists(json_path):
+            continue
+        with open(json_path) as f:
+            data = json.load(f)
+        if args.ipopt:
+            ts = np.array(data["solutions"][0], dtype=np.float64)
+        else:
+            ts = np.array(data["data"], dtype=np.float64)
+        # ts = np.array(data["time_series"], dtype=np.float64)
+
+        ts = normalize(ts)
+        if args.mp:
+            mp = stumpy.stump(ts, m=100)
+            ts = np.concatenate([mp[:, 0], mp[:, 1]])
+        feats = extract_ecg_features_bis(ts, fs=100)
+        X_test_rows.append([feats[k] for k in feature_keys])
+        # Assign ground-truth label
+        test_labels.append(idx)   # class index in SVM
+
+    if not X_test_rows:
+        print("No test data found under", base_root)
+    else:
+        X_test = np.array(X_test_rows, dtype=np.float64)
+        test_labels = np.array(test_labels, dtype=np.int64)
+
+        # Replace NaN/Inf with column medians (mirrors reidentification_svm)
+        for col in range(X_test.shape[1]):
+            bad = ~np.isfinite(X_test[:, col])
+            if bad.any():
+                X_test[bad, col] = np.nanmedian(X_test[~bad, col]) if not np.all(bad) else 0.0
+
+        y_pred = pipeline.predict(X_test)
+
+        correct   = (y_pred == test_labels).sum()
+        incorrect = len(y_pred) - correct
+        accuracy  = correct / len(y_pred)
+        print(f"True  : {correct}")
+        print(f"False : {incorrect}")
+        print(f"Accuracy : {accuracy:.4f}")
+
+        if args.verbose:
+            print("\n--- Per-test-patient SVM attribution ---")
+            for i, ptb_id in enumerate(test_ids):
+                hit = "✓" if y_pred[i] == i else "✗"
+                if y_pred[i] == i:
+                    print(f"  PTB-XL #{ptb_id} (class {i:3d})  → predicted #{y_pred[i]}  {hit}")
+
+    # ------------------------------------------------------------------ #
+    # Method 4 – Re-identification via tsfresh features + classifier      #
+    # ------------------------------------------------------------------ #
+
+    # Build training data: flat list of real ECGs (one per subject).
+    # list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
+    # files = list_patient[21000:21200]
+
+    # ts_list_train = []
+    # for file in files:
+    #     record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
+    #     signal = record.p_signal[:, 0].astype(np.float64)
+    #     signal = signal[:500]
+    #     r = signal.max() - signal.min()
+    #     if r == 0:
+    #         print(f"Constant signal: {file}")
+    #     elif not np.all(np.isfinite(signal)):
+    #         print(f"NaN/inf in signal: {file}")
+    #     ts = normalize(signal)
+    #     if args.mp:
+    #         mp = stumpy.stump(ts, m=100)
+    #         # ts = np.concatenate([mp[:, 0], mp[:, 1]])
+    #         ts = mp[:, 0]
+        
+    #     ts_list_train.append(ts)
+
+    # # Build test data: flat list of fake ECGs from base_root/ecg_{N}/results.json
+    # ecg_dirs = sorted(
+    #     [d for d in os.listdir(base_root) if d.startswith("ecg_")],
+    #     key=lambda x: int(x.split("_")[1]),
+    # )
+
+    # ts_list_test, test_labels = [], []
+    # for idx, ecg_dir in enumerate(ecg_dirs):
+    #     json_path = os.path.join(base_root, ecg_dir, "results.json")
+    #     if not os.path.exists(json_path):
+    #         continue
+    #     with open(json_path) as f:
+    #         data = json.load(f)
+    #     ts = np.array(data["data"], dtype=np.float64)
+    #     # ts = np.array(data["solutions"][0], dtype=np.float64)
+    #     ts = normalize(ts)
+    #     if args.mp:
+    #         mp = stumpy.stump(ts, m=100)
+    #         # ts = np.concatenate([mp[:, 0], mp[:, 1]])
+    #         ts = mp[:, 0]
+    #     ts_list_test.append(ts)
+    #     test_labels.append(idx)
+
+    # if not ts_list_test:
+    #     print("No test data found under", base_root)
+    # else:
+    #     clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+    #     pipeline, selected_cols, result = reidentification_tsfresh(
+    #         ts_list_train, ts_list_test, fs=100, classifier=clf
+    #     )
+    #     y_pred = result['y']
+    #     test_labels = np.array(test_labels, dtype=np.int64)
+
+    #     correct   = (y_pred == test_labels).sum()
+    #     incorrect = len(y_pred) - correct
+    #     accuracy  = correct / len(y_pred)
+    #     print(f"Classifier: {clf.__class__.__name__} (tsfresh), "
+    #           f"trained on {len(ts_list_train)} subjects, "
+    #           f"{len(selected_cols)} selected features.")
+    #     print(f"The selected features are : {selected_cols}")
+    #     print(f"True  : {correct}")
+    #     print(f"False : {incorrect}")
+    #     print(f"Accuracy : {accuracy:.4f}")
+
+    #     if args.verbose:
+    #         test_ids = list(range(21000, 21200))
+    #         print("\n--- Per-test-patient tsfresh attribution ---")
+    #         for i, ptb_id in enumerate(test_ids):
+    #             hit = "✓" if y_pred[i] == i else "✗"
+    #             if y_pred[i] == i:
+    #                 print(f"  PTB-XL #{ptb_id} (class {i:3d})  → predicted #{y_pred[i]}  {hit}")
+
+    # ------------------------------------------------------------------ #
+    # Method 5 – Re-identification via DTW  #
+    # ------------------------------------------------------------------ #
+    # Build reference pool: one list of ECGs per PTB-XL subject (attacker's data).
+    # reidentification_svm expects list[list[array]] — outer index = person class.
+    # list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
+    # files = list_patient[21000:21200]
+    # Build reference pool for Arrhythmia dataset
+    # with open("data/physionet.org/files/ecg-arrhythmia/records100/RECORDS", "r") as f:
+    #     list_patient = f.read().splitlines()
+    # print(list_patient)
+    # files = [os.path.join("data/physionet.org/files/ecg-arrhythmia/records100/", file+".npy") for file in list_patient]
+
+    # ref_attacker = []   # shape: (n_subjects,) each containing [ts]
+    # for file in files:
+    #     # record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
+    #     # signal = record.p_signal[:, 0].astype(np.float64)
+    #     signal = np.load(file)
+    #     ts = normalize(signal[:500])
+    #     if args.mp:
+    #         mp = stumpy.stump(ts, m=100)
+    #         ts = np.concatenate([mp[:, 0], mp[:, 1]])
+    #         ts = np.ascontiguousarray(ts, dtype=np.float64)
+    #     ref_attacker.append(ts)   # wrap in list: one sample per subject
+
+    # test_ids   = list(range(21000, 21200))
+    # n_patients = len(test_ids)
+
+    # # Build test set: flat structure — base_root/ecg_{N}/results.json
+    # ecg_dirs = sorted(
+    #     [d for d in os.listdir(base_root) if d.startswith("ecg_")],
+    #     key=lambda x: int(x.split("_")[1]),
+    # )
+
+    # y_pred, test_labels = [], []
+    # for idx, ecg_dir in enumerate(ecg_dirs):
+    #     json_path = os.path.join(base_root, ecg_dir, "results.json")
+    #     if not os.path.exists(json_path):
+    #         continue
+    #     with open(json_path) as f:
+    #         data = json.load(f)
+    #     ts = np.array(data["solutions"][0], dtype=np.float64)
+    #     # ts = np.array(data["data"], dtype=np.float64)
+    #     ts = normalize(ts)
+    #     if args.mp:
+    #         mp = stumpy.stump(ts, m=100)
+    #         ts = np.concatenate([mp[:, 0], mp[:, 1]])
+    #         ts = np.ascontiguousarray(ts, dtype=np.float64)
+    #     X_test = ts
+    #     # Assign ground-truth label
+    #     test_labels.append(idx)   # class index in SVM
+    #     y_pred.append(np.argmin(np.array([dtw.distance_fast(ref, X_test) for ref in ref_attacker])))
+        
+    # correct = sum(p == t for p, t in zip(y_pred, test_labels))
+    # incorrect = len(y_pred) - correct
+    # accuracy  = correct / len(y_pred) if y_pred else 0.0
+    # print(f"True  : {correct}")
+    # print(f"False : {incorrect}")
+    # print(f"Accuracy : {accuracy:.4f}")
+    # if args.verbose:
+    #     print("\n--- Per-test-patient SVM attribution ---")
+    #     for i, ptb_id in enumerate(test_ids):
+    #         hit = "✓" if y_pred[i] == i else "✗"
+    #         if y_pred[i] == i:
+    #             print(f"  PTB-XL #{ptb_id} (class {i:3d})  → predicted #{y_pred[i]}  {hit}")
