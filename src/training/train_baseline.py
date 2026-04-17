@@ -534,7 +534,6 @@ def train_inverse(
             traces["val_PCC"].append(float(np.mean(v_pcc)))
             traces["val_GRAD"].append(float(np.mean(v_grad)))
             traces["val_G"].append(traces["val_TS"][-1])
-
             monitor_loss = traces["val_G"][-1]
         else:
             traces["val_TS"].append(np.nan)

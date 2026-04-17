@@ -10,9 +10,10 @@ from src.utils_matrix_profile import normalize, build_mp_embedding
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
 from sklearn.metrics import roc_auc_score
 from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
 from ecgdetectors import Detectors
 import pandas as pd
 from ecg_features import extract_ecg_features_bis
@@ -744,19 +745,24 @@ if __name__ == "__main__":
     parser.add_argument("--mp", action="store_true", help="Use MP to reidentify")
     parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset")
     parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
+    parser.add_argument("--classifier", type=str, default="svm", help="The type of classifier used")
     args = parser.parse_args()
 
     if args.ipopt:
         if args.dataset == "arrhythmia":
             base_root = "src/results/ipopt/arrhythmia/"
-        else:
+        elif args.dataset == "ptbxl":
             base_root = "src/results/ipopt/ptbxl/"
+        elif args.dataset == "arrhythmia_xl":
+            base_root = "src/results/ipopt/arrhythmia_xl/"
             # base_root = "src/results/ipopt/ptbxl/ptbxl_rescale"
     else:
         if args.dataset == "arrhythmia":
             base_root = "test/results/ecg_arrhythmia/"
-        else:
+        elif args.dataset == "ptbxl":
             base_root = "src/results/baseline/2026-03-04_10:10:37/"
+        elif args.dataset == "arrhythmia_xl":
+            base_root = "test/results/ecg_arrhythmia_xl/"
     print(f"Evaluating database {args.dataset} under base root {base_root}")
     # all_persons = sorted(
     #     [d for d in os.listdir(base_root) if os.path.isdir(os.path.join(base_root, d))]
@@ -836,7 +842,7 @@ if __name__ == "__main__":
         list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
         files = sorted(list_patient[21000:21200])
 
-    elif args.dataset=="arrhythmia":
+    elif args.dataset=="arrhythmia" or args.dataset=="arrhythmia_xl":
         with open("data/physionet.org/files/ecg-arrhythmia/records100/RECORDS", "r") as f:
             list_patient = f.read().splitlines()
         files = [os.path.join("data/physionet.org/files/ecg-arrhythmia/records100/", file+".npy") for file in list_patient]
@@ -846,7 +852,7 @@ if __name__ == "__main__":
         if args.dataset == "ptbxl":
             record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
             signal = record.p_signal[:, 0].astype(np.float64)
-        if args.dataset == "arrhythmia":
+        elif args.dataset == "arrhythmia" or args.dataset == "arrhythmia_xl":
             signal = np.load(file)
         
         ts = normalize(signal[:500])
@@ -856,8 +862,12 @@ if __name__ == "__main__":
         ref_attacker.append([ts])   # wrap in list: one sample per subject
 
     # Choose classifier — swap comment to switch model:
-    # clf = KNeighborsClassifier(n_neighbors=1)           # 1-NN
-    clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True)  # RBF-SVM
+    if args.classifier == "knn":
+        clf = KNeighborsClassifier(n_neighbors=1, metric="minkowski")           # 1-NN
+    elif args.classifier == "svm":
+        clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True)  # RBF-SVM
+    elif args.classifier == "rf":
+        clf = RandomForestClassifier(max_features="log2", max_depth=10)
 
     pipeline, feature_keys, metadata = train_reidentification_classifier(
         ref_attacker, fs=100, classifier=clf
@@ -865,7 +875,7 @@ if __name__ == "__main__":
     print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects, "
           f"{len(feature_keys)} features.")
 
-    if args.dataset == "arrhythmia":
+    if args.dataset == "arrhythmia" or args.dataset == "arrhythmia_xl":
         test_ids = list(range(0, 48))
     elif args.dataset == "ptbxl":
         test_ids   = list(range(21000, 21200))
@@ -873,7 +883,7 @@ if __name__ == "__main__":
 
     # Build test set: flat structure — base_root/ecg_{N}/results.json
     ecg_dirs = sorted(
-        [d for d in os.listdir(base_root) if d.startswith("ecg_")],
+        [d for d in os.listdir(base_root) if d.startswith("ecg_") and d.split("_")[1].isdigit()],
         key=lambda x: int(x.split("_")[1]),
     )
 
@@ -887,7 +897,7 @@ if __name__ == "__main__":
         if args.ipopt:
             ts = np.array(data["solutions"][0], dtype=np.float64)
         else:
-            ts = np.array(data["data"], dtype=np.float64)
+            ts = np.array(data["fake_data"], dtype=np.float64)
         # ts = np.array(data["time_series"], dtype=np.float64)
 
         ts = normalize(ts)
@@ -897,7 +907,10 @@ if __name__ == "__main__":
         feats = extract_ecg_features_bis(ts, fs=100)
         X_test_rows.append([feats[k] for k in feature_keys])
         # Assign ground-truth label
-        test_labels.append(idx)   # class index in SVM
+        if args.dataset == "arrhythmia_xl":
+            test_labels.append(int(idx/5))
+        else:
+            test_labels.append(idx)   # class index in SVM
 
     if not X_test_rows:
         print("No test data found under", base_root)
@@ -922,10 +935,10 @@ if __name__ == "__main__":
 
         if args.verbose:
             print("\n--- Per-test-patient SVM attribution ---")
-            for i, ptb_id in enumerate(test_ids):
-                hit = "✓" if y_pred[i] == i else "✗"
-                if y_pred[i] == i:
-                    print(f"  PTB-XL #{ptb_id} (class {i:3d})  → predicted #{y_pred[i]}  {hit}")
+            for i, ptb_id in enumerate(test_labels):
+                hit = "✓" if y_pred[i] == ptb_id else "✗"
+                if y_pred[i] == ptb_id:
+                    print(f"#{i} (class {ptb_id:3d})  → predicted #{y_pred[i]}  {hit}")
 
     # ------------------------------------------------------------------ #
     # Method 4 – Re-identification via tsfresh features + classifier      #
