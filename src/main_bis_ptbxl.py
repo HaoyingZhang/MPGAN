@@ -348,8 +348,11 @@ if __name__ == "__main__":
         if (not X_val_exist) or (not y_val_exist):
             y_val_list = []
             for file in files_test:
-                record = wfdb.rdrecord(os.path.join(data_test_dir, file))
-                signal = record.p_signal[:, 0].astype(np.float32, copy=False)
+                if args.dataset == "t-drive":
+                    signal = np.load(file)
+                else:
+                    record = wfdb.rdrecord(os.path.join(data_test_dir, file))
+                    signal = record.p_signal[:, 0].astype(np.float32, copy=False)
                 for start_idx in indices_val:
                     ts = signal[start_idx : start_idx + n]
                     y_val_list.append(normalize(ts).astype(np.float32, copy=False))
