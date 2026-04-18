@@ -118,33 +118,6 @@ def blockify_mp(mp_array, window_len):
 
     return blocks
 
-def _process_index_batch(
-    signal,
-    indices,
-    start_row,
-    n, m,
-    enable_mp_norm,
-    enable_mpd_only,
-    znorm_mp
-):
-    X_batch = []
-    y_batch = []
-
-    for start_idx in indices:
-        ts = signal[start_idx : start_idx + n]
-        ts = normalize(ts).astype(np.float32, copy=False)
-
-        mp = MP_compute_single(
-            ts, m,
-            norm=enable_mp_norm,
-            mpd_only=enable_mpd_only,
-            znorm=znorm_mp
-        )
-        y_batch.append(ts)
-        X_batch.append(mp)
-
-    return start_row, np.stack(X_batch), np.stack(y_batch)
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== Inverse with the given Matrix Profile =====')
     parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
@@ -153,6 +126,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", type=int, default = 10, help="Number of epoches to train the network")
     parser.add_argument("-r", "--random_seed", type=int, default=None, help="Random seed used to generate the time series (default: None)")
     parser.add_argument("-c", "--category", type=str, default="theoretical", help="Category of the time series: 'theoretical', 'energy', or 'ecg' (default: 'theoretical')")
+    parser.add_argument("-dataset", "--dataset", type=str, default="ltdb", help="Dataset name")
     parser.add_argument("-train_id", "--train_id", type=int, nargs="+", help="IDs of persons used in the training set between 0 to 451")
     parser.add_argument("-test_id", "--test_id", type=int, nargs="+", help="IDs of persons used in the test set")
     parser.add_argument("-p", "--plot", action="store_true", help="Plot the original time series and the solutions (default: False)")
@@ -192,7 +166,10 @@ if __name__ == "__main__":
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
     
-    max_train_index = 1000
+    if args.dataset == "ptbxl":
+        max_train_index = 1000
+    elif args.dataset == "t-drive":
+        max_train_index = 500
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -202,17 +179,26 @@ if __name__ == "__main__":
     time_start_dataset = time.time()
     train_epoch = int(args.e)
 
-    list_test_patient = [14046, 14134, 14149, 14157, 14172, 14184, 15814]
+    if args.category == "ecg":
+        data_train_dir = data_test_dir = "data/physionet.org/files/"
+    elif args.category == "trajectory":
+        data_train_dir = data_test_dir = "data/T-drive/release/grid/"
+    
+    if args.dataset == "ptbxl":
+        list_patient = pd.read_csv(os.path.join(data_train_dir, "ptbxl_database.csv"))["filename_lr"]
+    # elif args.dataset == "arrhythmia":
+    #     with open(os.path.join(data_train_dir, "ecg-arrhythmia", "1.0.0", "RECORDS"),"r") as f:
+    #         list_patient = [line.strip() for line in f.readlines()]
+    # elif args.dataset == "ltdb":
+    elif args.dataset == "t-drive":
+        list_patient = [os.path.join(data_train_dir,str(i)+".npy") for i in np.arange(9105)]
 
-    data_train_dir = "data/physionet.org/files/"
-    data_test_dir = "data/physionet.org/files/"
-    list_patient = pd.read_csv(os.path.join(data_train_dir, "ptbxl_database.csv"))["filename_lr"]
     files = list_patient[args.train_id[0]:args.train_id[1]]
-    print(len(files))
     files_test = list_patient[args.test_id[0]:args.test_id[1]]
     
     n_person_training = len(files)
     n_ts_per_person_train = args.n_ts // n_person_training
+    actual_n_ts = n_ts_per_person_train * n_person_training
     print(n_ts_per_person_train)
     if n_ts_per_person_train > max_train_index - args.n + 1 :
         raise ValueError(f"Need more person, no enough data")
@@ -230,8 +216,8 @@ if __name__ == "__main__":
     X_path = "X_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
     y_path = "y_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
 
-    X_shape = (args.n_ts, L, C)
-    y_shape = (args.n_ts, args.n)
+    X_shape = (actual_n_ts, L, C)
+    y_shape = (actual_n_ts, args.n)
 
     X_expected_bytes = np.prod(X_shape) * np.dtype(np.float32).itemsize
     y_expected_bytes = np.prod(y_shape) * np.dtype(np.float32).itemsize
@@ -290,8 +276,11 @@ if __name__ == "__main__":
         y_train = []
         
         for file in files:
-            record = wfdb.rdrecord(os.path.join(data_train_dir, file))
-            signal = record.p_signal[:, 0].astype(np.float32, copy=False)
+            if args.dataset == "t-drive":
+                signal = np.load(file)
+            else:
+                record = wfdb.rdrecord(os.path.join(data_train_dir, file))
+                signal = record.p_signal[:, 0].astype(np.float32, copy=False)
 
             for start_idx in indices_ts_train:
                 ts = signal[start_idx : start_idx + n]
@@ -322,8 +311,8 @@ if __name__ == "__main__":
     full_train_dataset = MemmapDataset(
         X_path,
         y_path,
-        shape_X=(args.n_ts, L, C),
-        shape_y=(args.n_ts, args.n)
+        shape_X=(actual_n_ts, L, C),
+        shape_y=(actual_n_ts, args.n)
     )
     train_loader = DataLoader(
         full_train_dataset,

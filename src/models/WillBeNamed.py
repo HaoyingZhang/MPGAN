@@ -193,7 +193,7 @@ class Generator(nn.Module):
 
     def forward(self, mp_input, z=None, y=None):
         x = self._prep_input(mp_input)       # [B, L, channels]
-        h = self.in_proj(x)                  # either Conv1d or Identity
+        h = self.in_proj(x)                  # either Conv1d or Identity (by default)
 
         gamma = beta = None
         if self.film is not None:
