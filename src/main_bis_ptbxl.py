@@ -29,7 +29,10 @@ from src.utils_matrix_profile import compute_matrix_profile_distance, MP_compute
 from training.objectives import objective_function_pytorch, objective_function_exponential_pytorch, objective_function_unified
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
-    return (time_series - time_series.min()) / (time_series.max() - time_series.min())
+    rng = time_series.max() - time_series.min()
+    if rng == 0:
+        return np.zeros_like(time_series, dtype=np.float64)
+    return (time_series - time_series.min()) / rng
 
 def pearson_correlation(x, y):
     """Compute the absolute Pearson correlation between two time series x and y."""
@@ -57,8 +60,8 @@ def plot_res(folder_name, real_data, fake_data, name_list, m, mp_norm):
         with open(os.path.join(folder_name, file_name_short, "results.json"), "w") as f:
             json.dump(res_json, f, indent=4)
 
-        mp_real = stumpy.stump(real_ts, m, normalize=mp_norm)
-        mp_fake = stumpy.stump(fake_ts, m, normalize=mp_norm)
+        mp_real = stumpy.stump(real_ts, m, normalize=mp_norm, ignore_trivial=True)
+        mp_fake = stumpy.stump(fake_ts, m, normalize=mp_norm, ignore_trivial=True)
         mp_real_clean = mp_real[:, [0, 1]].astype(np.float32)
         mp_real_clean = np.nan_to_num(mp_real_clean, nan=0.0, posinf=0.0, neginf=0.0)
         mp_fake_clean = mp_fake[:, [0, 1]].astype(np.float32)
