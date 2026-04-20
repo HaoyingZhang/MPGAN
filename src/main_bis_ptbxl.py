@@ -432,6 +432,7 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device : {device}")
+    save_args(args, model_save_path, "config.json")
     G, G_loss, best_val_loss = train_inverse(train_loader,
                                                 val_loader, 
                                                  G, 
@@ -500,8 +501,6 @@ if __name__ == "__main__":
         plt.suptitle("Generated Time Series (First Feature)", fontsize=16, y=1.02)
         plt.savefig(os.path.join(model_save_path, "time_series.png"))
         plt.close()
-
-    save_args(args, model_save_path, "config.json")
 
     # 7. Plot the loss curves
     # d_loss_list_np = np.array(d_loss_list)
