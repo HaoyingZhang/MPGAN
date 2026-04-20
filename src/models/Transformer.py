@@ -98,7 +98,7 @@ class MPEncoderDecoder(nn.Module):
 
         # ---- Decode time series ----
         queries = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
-        queries = self.dec_pos(queries)         # [B, n, d_model]
+        # queries = self.dec_pos(queries)         # [B, n, d_model]
 
         dec_out = self.decoder(
             tgt=queries,

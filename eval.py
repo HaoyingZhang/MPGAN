@@ -23,10 +23,10 @@ def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, sta
             res_file = os.path.join(eval_folder, "results.json")
             with open(res_file) as json_data:
                 d = json.load(json_data)
-                ts_original = np.array(d["time_series"])
-                # ts_original = np.array(d["data"])
-                ts_fake = np.array(d["solutions"][0])
-                # ts_fake = np.array(d["fake_data"])
+                # ts_original = np.array(d["time_series"])
+                ts_original = np.array(d["data"])
+                # ts_fake = np.array(d["solutions"][0])
+                ts_fake = np.array(d["fake_data"])
                 if loss_function.__name__ == "partial_pearson_correlation":
                     loss = loss_function(ts_original, ts_fake, m=m)
                 elif (loss_function.__name__ == "partial_pearson_correlation") or (loss_function.__name__ == "partial_rmse"):
@@ -76,12 +76,17 @@ def rmse(x, y):
     y = np.asarray(y)
     return np.sqrt(np.mean((x - y) ** 2))
 
-def rmse_inv_check(list1,list2, epsilon=None):
-    mean_2 = np.mean(list2)+np.std(list2)
-    list2_inv = np.array([2*mean_2-x for x in list2])
-    rmse = np.min([np.sqrt(np.mean((list1 - list2) ** 2)), np.sqrt(np.mean((list1 - list2_inv)**2))])
+def rmse_inv_check(list1, list2, epsilon=None):
+    list1 = np.asarray(list1)
+    list2 = np.asarray(list2)
+
+    n1 = normalize(list1)
+    n2 = normalize(list2)
+    n2_inv = normalize(-list2)
+
+    rmse = np.min([np.sqrt(np.mean((n1 - n2) ** 2)), np.sqrt(np.mean((n1 - n2_inv) ** 2))])
     if epsilon is not None:
-        return round(rmse, 1)<=epsilon
+        return round(rmse, 1) <= epsilon
     else:
         return rmse
 
@@ -519,7 +524,9 @@ if __name__ == "__main__":
     # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia/"
     # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia_xl/"
     # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_ltdb_128/"
-    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ltdb_128"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ltdb_128"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-04-17_14:04:40"
+    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/ptbxl"
     # base_test_folder = "src/results/ipopt/arrhythmia_xl"
 
     loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
