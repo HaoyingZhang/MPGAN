@@ -13,6 +13,7 @@ import wfdb
 from concurrent.futures import ProcessPoolExecutor
 import time
 import pandas as pd
+import mne
 
 # LOCAL IMPORTS
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))  # Add root directory to path
@@ -173,6 +174,8 @@ if __name__ == "__main__":
         max_train_index = 1000
     elif args.dataset == "t-drive":
         max_train_index = 500
+    elif args.dataset == "tdbrain":
+        max_train_index = 60000  # ~5 min at 250 Hz
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -186,6 +189,8 @@ if __name__ == "__main__":
         data_train_dir = data_test_dir = "data/physionet.org/files/"
     elif args.category == "trajectory":
         data_train_dir = data_test_dir = "data/T-drive/release/grid/"
+    elif args.category == "eeg":
+        data_train_dir = data_test_dir = "data/TD-BRAIN-SAMPLE/"
     
     if args.dataset == "ptbxl":
         list_patient = pd.read_csv(os.path.join(data_train_dir, "ptbxl_database.csv"))["filename_lr"]
@@ -195,6 +200,8 @@ if __name__ == "__main__":
     # elif args.dataset == "ltdb":
     elif args.dataset == "t-drive":
         list_patient = [os.path.join(data_train_dir,str(i)+".npy") for i in np.arange(9105)]
+    elif args.dataset == "tdbrain":
+        list_patient = pd.read_csv(os.path.join(data_train_dir, "participants.tsv"), sep="\t")["participant_id"].tolist()
 
     files = list_patient[args.train_id[0]:args.train_id[1]]
     files_test = list_patient[args.test_id[0]:args.test_id[1]]
@@ -203,6 +210,7 @@ if __name__ == "__main__":
     n_ts_per_person_train = args.n_ts // n_person_training
     actual_n_ts = n_ts_per_person_train * n_person_training
     print(n_ts_per_person_train)
+
     if n_ts_per_person_train > max_train_index - args.n + 1 :
         raise ValueError(f"Need more person, no enough data")
     if n_ts_per_person_train == 0 :
@@ -281,6 +289,10 @@ if __name__ == "__main__":
         for file in files:
             if args.dataset == "t-drive":
                 signal = np.load(file)
+            elif args.dataset == "tdbrain":
+                vhdr_path = os.path.join(data_train_dir, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr")
+                raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
+                signal = raw.get_data(picks=0)[0].astype(np.float32)
             else:
                 record = wfdb.rdrecord(os.path.join(data_train_dir, file))
                 signal = record.p_signal[:, 0].astype(np.float32, copy=False)
@@ -350,11 +362,17 @@ if __name__ == "__main__":
             for file in files_test:
                 if args.dataset == "t-drive":
                     signal = np.load(file)
+                elif args.dataset == "tdbrain":
+                    vhdr_path = os.path.join(data_test_dir, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr")
+                    raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
+                    signal = raw.get_data(picks=0)[0].astype(np.float32)
                 else:
                     record = wfdb.rdrecord(os.path.join(data_test_dir, file))
                     signal = record.p_signal[:, 0].astype(np.float32, copy=False)
                 for start_idx in indices_val:
                     ts = signal[start_idx : start_idx + n]
+                    if len(ts) < n:
+                        continue
                     y_val_list.append(normalize(ts).astype(np.float32, copy=False))
             X_val_arr = np.stack([
                 MP_compute_single(
@@ -410,7 +428,7 @@ if __name__ == "__main__":
         G = G_biLSTM(n=n, m=m)
     elif args.g_model == "cnn":
         G = G_CNN(n=n, m=m)
-    elif args.g_model == "willbenamed":
+    elif args.g_model == "WillBeNamed":
         G = G_WillBeNamed(
                 n=n,
                 m=m,
@@ -476,7 +494,7 @@ if __name__ == "__main__":
                 fake_data = G(plot_tensor, z=z)
             else:
                 fake_data = G(plot_tensor)
-        plot_file_names = ["ecg_val_"+str(i) for i in range(len(plot_tensor))]
+        plot_file_names = [f"{args.category}_"+str(i) for i in range(len(plot_tensor))]
         if args.plot:
             plot_res(model_save_path, plot_labels, fake_data, plot_file_names, args.m, args.znorm_mp)
     

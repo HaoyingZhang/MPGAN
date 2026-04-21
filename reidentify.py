@@ -10,12 +10,11 @@ from src.utils_matrix_profile import normalize, build_mp_embedding
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
 from sklearn.metrics import roc_auc_score
 from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from ecgdetectors import Detectors
-import pandas as pd
 from ecg_features import extract_ecg_features_bis
 import pandas as pd
 from tsfresh import extract_features, select_features
@@ -524,7 +523,7 @@ def reidentification_attack(candidates, reference_pool, fs=150, top_k=None):
     return results[:top_k] if top_k else results
 
 
-def train_reidentification_classifier(list_of_ts, fs=150, classifier=None):
+def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using_feature=True):
     """
     Train a re-identification classifier from a list of time-series groups.
 
@@ -567,16 +566,23 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None):
     if classifier is None:
         print("No classifier is passed, using SVM")
         classifier = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+    if args.feature:
+        print("Using features extraction")
+    else:
+        print("Using original data")
 
     X_rows, y_rows = [], []
     feature_keys = None
 
     for class_idx, ts_group in enumerate(list_of_ts):
         for ts in ts_group:
-            feats = extract_ecg_features_bis(np.asarray(ts, dtype=np.float64), fs=fs)
-            if feature_keys is None:
-                feature_keys = list(feats.keys())
-            X_rows.append([feats[k] for k in feature_keys])
+            if using_feature:
+                feats = extract_ecg_features_bis(np.asarray(ts, dtype=np.float64), fs=fs)
+                if feature_keys is None:
+                    feature_keys = list(feats.keys())
+                X_rows.append([feats[k] for k in feature_keys])
+            else:
+                X_rows.append(ts)
             y_rows.append(class_idx)
 
     X = np.array(X_rows, dtype=np.float64)
@@ -746,6 +752,8 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset")
     parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
     parser.add_argument("--classifier", type=str, default="svm", help="The type of classifier used")
+    parser.add_argument("--feature", action="store_true", help="Using feature extraction")
+
     args = parser.parse_args()
 
     if args.ipopt:
@@ -756,13 +764,18 @@ if __name__ == "__main__":
         elif args.dataset == "arrhythmia_xl":
             base_root = "src/results/ipopt/arrhythmia_xl/"
             # base_root = "src/results/ipopt/ptbxl/ptbxl_rescale"
+        elif args.dataset == "ltdb":
+            base_root = "src/results/ipopt/ltdb/"
     else:
         if args.dataset == "arrhythmia":
             base_root = "test/results/ecg_arrhythmia/"
         elif args.dataset == "ptbxl":
-            base_root = "src/results/baseline/2026-03-04_10:10:37/"
+            base_root = "src/results/baseline/ptbxl/"
         elif args.dataset == "arrhythmia_xl":
             base_root = "test/results/ecg_arrhythmia_xl/"
+        elif args.dataset == "ltdb":
+            base_root = "test/results/ecg_ltdb_100/"
+    
     print(f"Evaluating database {args.dataset} under base root {base_root}")
     # all_persons = sorted(
     #     [d for d in os.listdir(base_root) if os.path.isdir(os.path.join(base_root, d))]
@@ -838,6 +851,8 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------ #
     # Build reference pool: one list of ECGs per PTB-XL subject (attacker's data).
     # reidentification_svm expects list[list[array]] — outer index = person class.
+
+    # Loading reference for the attacker to train the classifier
     if args.dataset == "ptbxl":
         list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
         files = sorted(list_patient[21000:21200])
@@ -847,18 +862,23 @@ if __name__ == "__main__":
             list_patient = f.read().splitlines()
         files = [os.path.join("data/physionet.org/files/ecg-arrhythmia/records100/", file+".npy") for file in list_patient]
 
+    elif args.dataset == "ltdb":
+        list_patient = ["14046", "14134", "14149", "14157", "14172", "14184", "15814"]
+        files = [os.path.join("data/physionet.org/files/ltdb/records100/", file+".npy") for file in list_patient]
+    
     ref_attacker = []   # shape: (n_subjects,) each containing [ts]
     for file in files:
         if args.dataset == "ptbxl":
             record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
             signal = record.p_signal[:, 0].astype(np.float64)
-        elif args.dataset == "arrhythmia" or args.dataset == "arrhythmia_xl":
+        elif args.dataset in ("arrhythmia", "arrhythmia_xl", "ltdb"):
             signal = np.load(file)
         
         ts = normalize(signal[:500])
         if args.mp:
             mp = stumpy.stump(ts, m=100)
             ts = np.concatenate([mp[:, 0], mp[:, 1]])
+            
         ref_attacker.append([ts])   # wrap in list: one sample per subject
 
     # Choose classifier — swap comment to switch model:
@@ -870,16 +890,9 @@ if __name__ == "__main__":
         clf = RandomForestClassifier(max_features="log2", max_depth=10)
 
     pipeline, feature_keys, metadata = train_reidentification_classifier(
-        ref_attacker, fs=100, classifier=clf
+        ref_attacker, fs=100, classifier=clf, using_feature=args.feature
     )
-    print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects, "
-          f"{len(feature_keys)} features.")
-
-    if args.dataset == "arrhythmia" or args.dataset == "arrhythmia_xl":
-        test_ids = list(range(0, 48))
-    elif args.dataset == "ptbxl":
-        test_ids   = list(range(21000, 21200))
-    n_patients = len(test_ids)
+    print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects")
 
     # Build test set: flat structure — base_root/ecg_{N}/results.json
     ecg_dirs = sorted(
@@ -898,19 +911,24 @@ if __name__ == "__main__":
             ts = np.array(data["solutions"][0], dtype=np.float64)
         else:
             ts = np.array(data["fake_data"], dtype=np.float64)
-        # ts = np.array(data["time_series"], dtype=np.float64)
+            # ts = np.array(data["data"], dtype=np.float64)
 
         ts = normalize(ts)
         if args.mp:
             mp = stumpy.stump(ts, m=100)
             ts = np.concatenate([mp[:, 0], mp[:, 1]])
-        feats = extract_ecg_features_bis(ts, fs=100)
-        X_test_rows.append([feats[k] for k in feature_keys])
+        if args.feature:
+            feats = extract_ecg_features_bis(ts, fs=100)
+            X_test_rows.append([feats[k] for k in feature_keys])
+        else:
+            X_test_rows.append(ts)
         # Assign ground-truth label
         if args.dataset == "arrhythmia_xl":
             test_labels.append(int(idx/5))
-        else:
+        elif args.dataset in ("ptbxl", "arrhythmia"):
             test_labels.append(idx)   # class index in SVM
+        elif args.dataset == "ltdb":
+            test_labels.append(int(idx/20))
 
     if not X_test_rows:
         print("No test data found under", base_root)
