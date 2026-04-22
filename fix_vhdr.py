@@ -37,8 +37,11 @@ for subdir in os.listdir(data_dir):
         continue
     ses1 = os.path.join(sub_path, "ses-1")
     ses2 = os.path.join(sub_path, "ses-2")
+    ses3 = os.path.join(sub_path, "ses-3")
     if os.path.isdir(ses2) and not os.path.isdir(ses1):
         candidates.append((sub_path, ses2, ses1))
+    elif os.path.isdir(ses3) and not os.path.isdir(ses1):
+        candidates.append((sub_path, ses3, ses1))
 
 renamed_dirs = 0
 renamed_files = 0
@@ -51,6 +54,7 @@ for sub_path, ses2_dir, ses1_dir in candidates:
     if os.path.isdir(eeg_dir):
         for fname in sorted(os.listdir(eeg_dir)):
             new_fname = fname.replace("ses-2", "ses-1")
+            new_fname = fname.replace("ses-3", "ses-1")
             if new_fname == fname:
                 continue
             old_path = os.path.join(eeg_dir, fname)
@@ -70,6 +74,7 @@ for sub_path, ses2_dir, ses1_dir in candidates:
             except UnicodeDecodeError:
                 continue
             new_content = content.replace("ses-2", "ses-1")
+            new_content = content.replace("ses-3", "ses-1")
             if new_content != content:
                 with open(fpath, "w", encoding="utf-8") as f:
                     f.write(new_content)
@@ -82,6 +87,6 @@ for sub_path, ses2_dir, ses1_dir in candidates:
     print(f"Renamed folder: {ses2_dir} → {ses1_dir}")
 
 print(f"\nPass 2 done.")
-print(f"  {renamed_dirs} ses-2 folder(s) renamed to ses-1")
+print(f"  {renamed_dirs} ses-2/ses-3 folder(s) renamed to ses-1")
 print(f"  {renamed_files} file(s) renamed")
-print(f"  {patched_content} file(s) had internal ses-2 references patched")
+print(f"  {patched_content} file(s) had internal ses-2/ses-3 references patched")
