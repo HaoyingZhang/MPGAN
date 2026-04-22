@@ -175,7 +175,7 @@ if __name__ == "__main__":
     elif args.dataset == "t-drive":
         max_train_index = 500
     elif args.dataset == "tdbrain":
-        max_train_index = 60000  # ~5 min at 250 Hz
+        max_train_index = 50000  # ~5 min at 250 Hz
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     elif args.category == "trajectory":
         data_train_dir = data_test_dir = "data/T-drive/release/grid/"
     elif args.category == "eeg":
-        data_train_dir = data_test_dir = "data/TD-BRAIN-SAMPLE/"
+        data_train_dir = data_test_dir = "data/TDBRAIN-dataset/"
     
     if args.dataset == "ptbxl":
         list_patient = pd.read_csv(os.path.join(data_train_dir, "ptbxl_database.csv"))["filename_lr"]
@@ -202,10 +202,10 @@ if __name__ == "__main__":
         list_patient = [os.path.join(data_train_dir,str(i)+".npy") for i in np.arange(9105)]
     elif args.dataset == "tdbrain":
         list_patient = pd.read_csv(os.path.join(data_train_dir, "participants.tsv"), sep="\t")["participant_id"].tolist()
-
+    
     files = list_patient[args.train_id[0]:args.train_id[1]]
     files_test = list_patient[args.test_id[0]:args.test_id[1]]
-    
+    print(files)
     n_person_training = len(files)
     n_ts_per_person_train = args.n_ts // n_person_training
     actual_n_ts = n_ts_per_person_train * n_person_training
@@ -276,12 +276,6 @@ if __name__ == "__main__":
         indices_ts = rng.choice(candidates, size=n_ts_per_person_train, replace=False)
 
     indices_ts_train = indices_ts[:n_ts_per_person_train]
-    indices_ts_test = indices_ts[n_ts_per_person_train:]
-    
-    # print(files)
-    # print(files_test)
-    # print(indices_ts_train)
-    # print(indices_ts_test)
 
     if ((not X_train_exist) and (not y_train_exist)): 
         y_train = []
@@ -299,6 +293,8 @@ if __name__ == "__main__":
 
             for start_idx in indices_ts_train:
                 ts = signal[start_idx : start_idx + n]
+                if len(ts)<n:
+                    print(f"Length of ts {len(ts)}<{n}")
                 ts_norm = normalize(ts).astype(np.float32, copy=False)
                 y_train.append(ts_norm)
         print("Finishing loading the ts data")
@@ -363,8 +359,8 @@ if __name__ == "__main__":
                 if args.dataset == "t-drive":
                     signal = np.load(file)
                 elif args.dataset == "tdbrain":
-                    vhdr_path = os.path.join(data_test_dir, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr")
-                    raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
+                    matches = glob.glob(os.path.join(data_test_dir, file, "ses-1", "eeg", "*restEC*.vhdr"))
+                    raw = mne.io.read_raw_brainvision(matches[0], preload=True, verbose=False)
                     signal = raw.get_data(picks=0)[0].astype(np.float32)
                 else:
                     record = wfdb.rdrecord(os.path.join(data_test_dir, file))
@@ -372,7 +368,7 @@ if __name__ == "__main__":
                 for start_idx in indices_val:
                     ts = signal[start_idx : start_idx + n]
                     if len(ts) < n:
-                        continue
+                        print(f"error, length of ts {len(ts)}<{n}")
                     y_val_list.append(normalize(ts).astype(np.float32, copy=False))
             X_val_arr = np.stack([
                 MP_compute_single(
