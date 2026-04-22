@@ -124,7 +124,7 @@ def blockify_mp(mp_array, window_len):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== Inverse with the given Matrix Profile =====')
-    parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
+    parser.add_argument("-n_ts", type=int, default=None, help="Max dataset size per person (optional; all valid slices used when omitted)")
     parser.add_argument("-n", type=int, required=True, help="Length of the considered time series")
     parser.add_argument("-m", type=int, required=True, help="Subsequence length for the Matrix Profile")
     parser.add_argument("-e", type=int, default = 10, help="Number of epoches to train the network")
@@ -159,7 +159,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.obj_func not in ["relu", "exp"]: 
+    if args.obj_func not in ["relu", "exp"]:
         parser.error(f"Must choose objective function between relu or exp, but got {args.obj_func}")
     if args.enable_mp_embedding and args.enable_mp_norm:
         parser.error(f"The MP embedding and MP norm cannot be enabled in the same time")
@@ -169,19 +169,19 @@ if __name__ == "__main__":
 
     if n-m+1 <= 0:
         raise ValueError(f"Need n - m + 1 > 0, got n={n}, m={m}")
-    
+
     if args.dataset == "ptbxl":
         max_train_index = 1000
     elif args.dataset == "t-drive":
         max_train_index = 500
     elif args.dataset == "tdbrain":
-        max_train_index = 50000  # ~5 min at 250 Hz
+        max_train_index = 60000  # ~5 min at 250 Hz
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
     time_start = datetime.now()
     time_str = time_start.strftime("%Y-%m-%d_%H:%M:%S")
-    
+
     time_start_dataset = time.time()
     train_epoch = int(args.e)
 
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         data_train_dir = data_test_dir = "data/T-drive/release/grid/"
     elif args.category == "eeg":
         data_train_dir = data_test_dir = "data/TDBRAIN-dataset/"
-    
+
     if args.dataset == "ptbxl":
         list_patient = pd.read_csv(os.path.join(data_train_dir, "ptbxl_database.csv"))["filename_lr"]
     # elif args.dataset == "arrhythmia":
@@ -202,19 +202,11 @@ if __name__ == "__main__":
         list_patient = [os.path.join(data_train_dir,str(i)+".npy") for i in np.arange(9105)]
     elif args.dataset == "tdbrain":
         list_patient = pd.read_csv(os.path.join(data_train_dir, "participants.tsv"), sep="\t")["participant_id"].tolist()
-    
+
     files = list_patient[args.train_id[0]:args.train_id[1]]
     files_test = list_patient[args.test_id[0]:args.test_id[1]]
     print(files)
     n_person_training = len(files)
-    n_ts_per_person_train = args.n_ts // n_person_training
-    actual_n_ts = n_ts_per_person_train * n_person_training
-    print(n_ts_per_person_train)
-
-    if n_ts_per_person_train > max_train_index - args.n + 1 :
-        raise ValueError(f"Need more person, no enough data")
-    if n_ts_per_person_train == 0 :
-        raise ValueError(f"Too much person")
 
     L = args.n - m + 1
     window_len = 100
@@ -223,63 +215,52 @@ if __name__ == "__main__":
     else:
         C = 2
 
-    # Preallocate OUTPUT memmaps
     X_path = "X_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
     y_path = "y_train_n"+str(n)+"_m"+str(m)+"_p"+str(args.train_id)+".dat"
 
-    X_shape = (actual_n_ts, L, C)
-    y_shape = (actual_n_ts, args.n)
+    float32_bytes = np.dtype(np.float32).itemsize
+    X_row_bytes = L * C * float32_bytes
+    y_row_bytes = n * float32_bytes
 
-    X_expected_bytes = np.prod(X_shape) * np.dtype(np.float32).itemsize
-    y_expected_bytes = np.prod(y_shape) * np.dtype(np.float32).itemsize
+    # Try to reuse cached memmaps: infer actual_n_ts from file sizes
+    X_cached = os.path.exists(X_path)
+    y_cached = os.path.exists(y_path)
+    actual_n_ts = None
+    if X_cached and y_cached:
+        X_rows = os.path.getsize(X_path) // X_row_bytes
+        y_rows = os.path.getsize(y_path) // y_row_bytes
+        if X_rows == y_rows and X_rows > 0:
+            actual_n_ts = X_rows
+            print(f"[✓] Reusing existing memmaps ({actual_n_ts} samples)")
+            X_train_mm = np.memmap(X_path, dtype=np.float32, mode="r+", shape=(actual_n_ts, L, C))
+            y_train_mm = np.memmap(y_path, dtype=np.float32, mode="r+", shape=(actual_n_ts, n))
+        else:
+            print(f"[!] Cached memmaps have inconsistent sizes, recreating.")
+            os.remove(X_path); os.remove(y_path)
+            X_cached = y_cached = False
 
-
-    def memmap_or_create(path, shape, dtype):
-        file_exist = False
-        expected_bytes = np.prod(shape) * np.dtype(dtype).itemsize
-
-        if os.path.exists(path):
-            actual_bytes = os.path.getsize(path)
-
-            if actual_bytes == expected_bytes:
-                print(f"[✓] Reusing existing memmap: {path}")
-                file_exist = True
-                return np.memmap(path, dtype=dtype, mode="r+", shape=shape), file_exist
-            else:
-                print(
-                    f"[!] Size mismatch for {path}: "
-                    f"expected {expected_bytes}, got {actual_bytes}. Recreating."
-                )
-                os.remove(path)
-
-        print(f"[+] Creating memmap: {path}")
-        return np.memmap(path, dtype=dtype, mode="w+", shape=shape), file_exist
-
-    X_train_mm, X_train_exist = memmap_or_create(X_path, X_shape, np.float32)
-    y_train_mm, y_train_exist = memmap_or_create(y_path, y_shape, np.float32)
-
-    print("allocation finished")
-
-    np.random.seed(args.random_seed)
-    rng = np.random.default_rng(args.random_seed)
-    max_start = max_train_index - n + 1
-    assert max_start > 0, "Signal shorter than window length"
-
-    max_possible = max_train_index // n
-
-    if n_ts_per_person_train > max_possible:
-        print("Not enough room for spaced sampling, overlapped time series will be used")
-        indices_ts = np.random.randint(0, max_start, size=n_ts_per_person_train)
-    else:
-        print("No overlapped time series used")
+    if actual_n_ts is None:
+        np.random.seed(args.random_seed)
+        rng = np.random.default_rng(args.random_seed)
+        max_start = max_train_index - n + 1
+        assert max_start > 0, "Signal shorter than window length"
         candidates = np.arange(0, max_start, n, dtype=np.int64)
-        indices_ts = rng.choice(candidates, size=n_ts_per_person_train, replace=False)
 
-    indices_ts_train = indices_ts[:n_ts_per_person_train]
+        if args.n_ts is not None:
+            n_ts_per_person = args.n_ts // n_person_training
+            if n_ts_per_person == 0:
+                raise ValueError("n_ts too small for the number of persons")
+            if n_ts_per_person > len(candidates):
+                print("Not enough room for spaced sampling, overlapped time series will be used")
+                indices_ts = np.random.randint(0, max_start, size=n_ts_per_person)
+            else:
+                print("No overlapped time series used")
+                indices_ts = rng.choice(candidates, size=n_ts_per_person, replace=False)
+        else:
+            print("No n_ts specified, using all non-overlapping slices")
+            indices_ts = candidates
 
-    if ((not X_train_exist) and (not y_train_exist)): 
         y_train = []
-        
         for file in files:
             if args.dataset == "t-drive":
                 signal = np.load(file)
@@ -291,34 +272,38 @@ if __name__ == "__main__":
                 record = wfdb.rdrecord(os.path.join(data_train_dir, file))
                 signal = record.p_signal[:, 0].astype(np.float32, copy=False)
 
-            for start_idx in indices_ts_train:
+            for start_idx in indices_ts:
                 ts = signal[start_idx : start_idx + n]
-                if len(ts)<n:
-                    print(f"Length of ts {len(ts)}<{n}")
-                ts_norm = normalize(ts).astype(np.float32, copy=False)
-                y_train.append(ts_norm)
-        print("Finishing loading the ts data")
+                if len(ts) < n:
+                    print(f"Skipping short slice (len={len(ts)}<{n}) in {file} at {start_idx}")
+                    continue
+                y_train.append(normalize(ts).astype(np.float32, copy=False))
+
+        print(f"Collected {len(y_train)} valid time series")
         X_train = np.stack([
             MP_compute_single(
-                    y_train[i], m,
-                    norm=args.enable_mp_norm,
-                    mpd_only=args.enable_mpd_only,
-                    znorm=args.znorm_mp,
-                    fill_value=args.fill_value
-                )
-                for i in range(len(y_train))
-            ])
-        
+                y_train[i], m,
+                norm=args.enable_mp_norm,
+                mpd_only=args.enable_mpd_only,
+                znorm=args.znorm_mp,
+                fill_value=args.fill_value
+            )
+            for i in range(len(y_train))
+        ])
+
+        actual_n_ts = len(y_train)
+        print(f"[+] Creating memmaps for {actual_n_ts} samples")
+        X_train_mm = np.memmap(X_path, dtype=np.float32, mode="w+", shape=(actual_n_ts, L, C))
+        y_train_mm = np.memmap(y_path, dtype=np.float32, mode="w+", shape=(actual_n_ts, n))
         X_train_mm[:] = X_train
         y_train_mm[:] = np.array(y_train, dtype=np.float32)
-
         X_train_mm.flush()
         y_train_mm.flush()
-        
+
     loading_time = time.time() - time_start_dataset
     print(f"Time loading the training data: {loading_time} seconds")
     batch_size = 64
-    
+
     full_train_dataset = MemmapDataset(
         X_path,
         y_path,
@@ -334,26 +319,43 @@ if __name__ == "__main__":
     )
     print(f"Training set length: {len(full_train_dataset)}")
 
-    # ===== Validation set: n_val non-overlapping random time series from test patients (signal [0, 1000)) =====
+    # ===== Validation set =====
     if args.enable_validation:
+        np.random.seed(args.random_seed)
+        rng = np.random.default_rng(args.random_seed)
         n_person_val = len(files_test)
-        n_val_per_person = args.n_val // n_person_val
-        if n_val_per_person == 0:
-            raise ValueError(f"n_val={args.n_val} too small for {n_person_val} test persons")
         val_candidates = np.arange(0, max_train_index - n + 1, n, dtype=np.int64)
-        if n_val_per_person > len(val_candidates):
-            raise ValueError(f"Not enough non-overlapping positions in [0, {max_train_index}) for {n_val_per_person} samples/person")
-        indices_val = rng.choice(val_candidates, size=n_val_per_person, replace=False)
-        n_val_total = n_person_val * n_val_per_person
-        print(f"Validation: {n_val_per_person} samples/person × {n_person_val} test persons = {n_val_total} total")
+
+        if args.n_val is not None:
+            n_val_per_person = args.n_val // n_person_val
+            if n_val_per_person == 0:
+                raise ValueError(f"n_val={args.n_val} too small for {n_person_val} test persons")
+            if n_val_per_person > len(val_candidates):
+                raise ValueError(f"Not enough non-overlapping positions in [0, {max_train_index}) for {n_val_per_person} samples/person")
+            indices_val = rng.choice(val_candidates, size=n_val_per_person, replace=False)
+        else:
+            indices_val = val_candidates
 
         X_val_path = "X_val_n"+str(n)+"_m"+str(m)+"_p"+str(args.test_id)+".dat"
         y_val_path = "y_val_n"+str(n)+"_m"+str(m)+"_p"+str(args.test_id)+".dat"
 
-        X_val_mm, X_val_exist = memmap_or_create(X_val_path, (n_val_total, L, C), np.float32)
-        y_val_mm, y_val_exist = memmap_or_create(y_val_path, (n_val_total, args.n), np.float32)
+        X_val_cached = os.path.exists(X_val_path)
+        y_val_cached = os.path.exists(y_val_path)
+        n_val_total = None
+        if X_val_cached and y_val_cached:
+            X_val_rows = os.path.getsize(X_val_path) // X_row_bytes
+            y_val_rows = os.path.getsize(y_val_path) // y_row_bytes
+            if X_val_rows == y_val_rows and X_val_rows > 0:
+                n_val_total = X_val_rows
+                print(f"[✓] Reusing existing val memmaps ({n_val_total} samples)")
+                X_val_mm = np.memmap(X_val_path, dtype=np.float32, mode="r+", shape=(n_val_total, L, C))
+                y_val_mm = np.memmap(y_val_path, dtype=np.float32, mode="r+", shape=(n_val_total, n))
+            else:
+                print(f"[!] Cached val memmaps have inconsistent sizes, recreating.")
+                os.remove(X_val_path); os.remove(y_val_path)
+                X_val_cached = y_val_cached = False
 
-        if (not X_val_exist) or (not y_val_exist):
+        if n_val_total is None:
             y_val_list = []
             for file in files_test:
                 if args.dataset == "t-drive":
@@ -368,8 +370,12 @@ if __name__ == "__main__":
                 for start_idx in indices_val:
                     ts = signal[start_idx : start_idx + n]
                     if len(ts) < n:
-                        print(f"error, length of ts {len(ts)}<{n}")
+                        print(f"Skipping short val slice (len={len(ts)}<{n}) in {file} at {start_idx}")
+                        continue
                     y_val_list.append(normalize(ts).astype(np.float32, copy=False))
+
+            n_val_total = len(y_val_list)
+            print(f"Collected {n_val_total} valid validation time series")
             X_val_arr = np.stack([
                 MP_compute_single(
                     y_val_list[i], m,
@@ -378,8 +384,10 @@ if __name__ == "__main__":
                     znorm=args.znorm_mp,
                     fill_value=args.fill_value
                 )
-                for i in range(len(y_val_list))
+                for i in range(n_val_total)
             ])
+            X_val_mm = np.memmap(X_val_path, dtype=np.float32, mode="w+", shape=(n_val_total, L, C))
+            y_val_mm = np.memmap(y_val_path, dtype=np.float32, mode="w+", shape=(n_val_total, n))
             X_val_mm[:] = X_val_arr
             y_val_mm[:] = np.array(y_val_list, dtype=np.float32)
             X_val_mm.flush()
