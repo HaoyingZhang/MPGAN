@@ -1,6 +1,10 @@
 import numpy as np
 import stumpy
 import torch
+
+from src.robustness.perturber import perturb_mpi, perturb_mpd
+from src.utils import mpi_distance, mpd_distance
+
 try:
     from numba import njit
     JIT = True
@@ -97,16 +101,28 @@ def MP_compute_single(
                 mpd_only=False,
                 znorm=False,
                 embedding=False,
-                fill_value = 100.0
+                fill_value = 100.0,
+                perturb = None,
+                epsilon = 100
             ):
     ts = np.array(ts, dtype=np.float64)
 
     profile = stumpy.stump(ts, m=m, normalize=znorm)
+    distance_utility = 0
     if norm:
         mpd, mpi = normalized_MP(profile)
     else:
         mpd = profile[:, 0].astype(np.float32)
         mpi = profile[:, 1].astype(int)
+        if perturb == "mpi":
+            # print(f"Evaluating robustness with Perturbation in MPI with epsilon = {epsilon}")
+            mpi_pert = perturb_mpi(mpi, epsilon_global=epsilon)
+            distance_utility = mpi_distance(mpi, mpi_pert)
+            mpi = mpi_pert
+        elif perturb == "mpd":
+            mpd_pert = perturb_mpd(mpd, epsilon_global=epsilon)
+            distance_utility = mpd_distance(mpd, mpd_pert)
+            mpd = mpd_pert
 
     if not mpd_only:
         if embedding:
@@ -115,7 +131,7 @@ def MP_compute_single(
             line = [[mpd[i], mpi[i]] for i in range(len(mpd))]
     else:
         line = blockify_mp_unit(mpd)
-    return line
+    return line, distance_utility
 
 def MP_compute_recursive(ts_data, m, norm=False, mpd_only=False, znorm=True, embedding=False):
     """

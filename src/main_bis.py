@@ -367,7 +367,7 @@ if __name__ == "__main__":
     
     hidden_dim = 64
     if args.enable_mp_embedding:
-        mp_dim = L
+        mp_dim = 512
     else:
         mp_dim = C  # MPD + MPI
 

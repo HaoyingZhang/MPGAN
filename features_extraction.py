@@ -1,17 +1,15 @@
-from scipy.signal import find_peaks, welch as scipy_welch
+from scipy.signal import find_peaks, welch as scipy_welch, butter, filtfilt, hilbert
 import pywt
 
 import numpy as np
-import os, sys, json
 from scipy import stats
-import matplotlib
 from dtaidistance import dtw
-import wfdb
-import torch
-from src.utils_matrix_profile import normalize, build_mp_embedding
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
-from sklearn.metrics import roc_auc_score
 from ecgdetectors import Detectors
+import pandas as pd
+from scipy.stats import kurtosis, skew, entropy as scipy_entropy
+from scipy import stats
+from scipy.optimize import curve_fit
 
 
 def pearson_correlation(x, y, threshold=None):
@@ -35,98 +33,98 @@ def zdtw(a, b):
     return dtw(a, b)
 
 
-def ts_entropy(ts, fs=150, epsilon=0.5):
-    """
-    Beat-aligned morphology entropy + transition entropy for ECG biometrics.
+# def ts_entropy(ts, fs=150, epsilon=0.5):
+#     """
+#     Beat-aligned morphology entropy + transition entropy for ECG biometrics.
 
-    Returns a dict with:
-      - morphology_entropy  : normalized Shannon entropy over beat-type distribution
-      - transition_entropy  : entropy of beat-to-beat transition matrix (Markov signature)
-      - n_clusters          : number of distinct beat morphologies detected
+#     Returns a dict with:
+#       - morphology_entropy  : normalized Shannon entropy over beat-type distribution
+#       - transition_entropy  : entropy of beat-to-beat transition matrix (Markov signature)
+#       - n_clusters          : number of distinct beat morphologies detected
 
-    Beat segmentation uses R-peak detection so windows are cardiac-cycle aligned,
-    avoiding the artifact of fixed-length windows splitting QRS complexes.
-    Falls back to fixed-length segmentation if too few R-peaks are found.
-    """
-    ts = np.asarray(ts, dtype=np.float64)
-    n  = len(ts)
+#     Beat segmentation uses R-peak detection so windows are cardiac-cycle aligned,
+#     avoiding the artifact of fixed-length windows splitting QRS complexes.
+#     Falls back to fixed-length segmentation if too few R-peaks are found.
+#     """
+#     ts = np.asarray(ts, dtype=np.float64)
+#     n  = len(ts)
 
-    # --- R-peak detection ---
-    thresh   = ts.mean() + 0.4 * ts.std()
-    min_dist = int(fs * 0.3)
-    peaks, _ = find_peaks(ts, height=thresh, distance=min_dist, prominence=0.1)
+#     # --- R-peak detection ---
+#     thresh   = ts.mean() + 0.4 * ts.std()
+#     min_dist = int(fs * 0.3)
+#     peaks, _ = find_peaks(ts, height=thresh, distance=min_dist, prominence=0.1)
 
-    pre_r  = int(0.20 * fs)
-    post_r = int(0.40 * fs)
-    valid  = peaks[(peaks >= pre_r) & (peaks + post_r <= n)]
+#     pre_r  = int(0.20 * fs)
+#     post_r = int(0.40 * fs)
+#     valid  = peaks[(peaks >= pre_r) & (peaks + post_r <= n)]
 
-    if len(valid) >= 3:
-        segments = [ts[p - pre_r : p + post_r] for p in valid]
-    else:
-        # fallback: fixed-length windows
-        m = int(0.6 * fs)
-        if n < 2 * m:
-            return {'morphology_entropy': float('nan'),
-                    'transition_entropy': float('nan'),
-                    'n_clusters': 0}
-        segments = [ts[i*m:(i+1)*m] for i in range(n // m)]
+#     if len(valid) >= 3:
+#         segments = [ts[p - pre_r : p + post_r] for p in valid]
+#     else:
+#         # fallback: fixed-length windows
+#         m = int(0.6 * fs)
+#         if n < 2 * m:
+#             return {'morphology_entropy': float('nan'),
+#                     'transition_entropy': float('nan'),
+#                     'n_clusters': 0}
+#         segments = [ts[i*m:(i+1)*m] for i in range(n // m)]
 
-    # --- Z-normalise each beat ---
-    normed = []
-    for seg in segments:
-        std = seg.std()
-        normed.append((seg - seg.mean()) / (std + 1e-8))
+#     # --- Z-normalise each beat ---
+#     normed = []
+#     for seg in segments:
+#         std = seg.std()
+#         normed.append((seg - seg.mean()) / (std + 1e-8))
 
-    # --- Greedy clustering ---
-    prototypes, labels = [], []
-    for a in normed:
-        if not prototypes:
-            prototypes.append(a)
-            labels.append(0)
-            continue
-        dists = np.array([np.linalg.norm(a - p) for p in prototypes])
-        j = int(np.argmin(dists))
-        if dists[j] < epsilon:
-            labels.append(j)
-        else:
-            labels.append(len(prototypes))
-            prototypes.append(a)
+#     # --- Greedy clustering ---
+#     prototypes, labels = [], []
+#     for a in normed:
+#         if not prototypes:
+#             prototypes.append(a)
+#             labels.append(0)
+#             continue
+#         dists = np.array([np.linalg.norm(a - p) for p in prototypes])
+#         j = int(np.argmin(dists))
+#         if dists[j] < epsilon:
+#             labels.append(j)
+#         else:
+#             labels.append(len(prototypes))
+#             prototypes.append(a)
 
-    labels = np.array(labels)
-    k      = len(prototypes)
+#     labels = np.array(labels)
+#     k      = len(prototypes)
 
-    # --- Morphology entropy ---
-    counts = np.bincount(labels, minlength=k).astype(np.float64)
-    probs  = counts / counts.sum()
-    if k <= 1:
-        morph_ent = 0.0
-    else:
-        morph_ent = float(scipy_entropy(probs) / np.log(k))
+#     # --- Morphology entropy ---
+#     counts = np.bincount(labels, minlength=k).astype(np.float64)
+#     probs  = counts / counts.sum()
+#     if k <= 1:
+#         morph_ent = 0.0
+#     else:
+#         morph_ent = float(scipy_entropy(probs) / np.log(k))
 
-    # --- Transition entropy (beat i -> beat i+1) ---
-    if len(labels) >= 2:
-        trans = np.zeros((k, k), dtype=np.float64)
-        for a, b in zip(labels[:-1], labels[1:]):
-            trans[a, b] += 1
-        row_sums = trans.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1
-        trans_prob = trans / row_sums
-        # row-wise entropy, weighted by how often each state is visited
-        state_freq = counts / counts.sum()
-        trans_ent  = 0.0
-        for i in range(k):
-            row = trans_prob[i]
-            row = row[row > 0]
-            if len(row) > 1:
-                trans_ent += state_freq[i] * float(-np.sum(row * np.log(row)) / np.log(k))
-    else:
-        trans_ent = 0.0
+#     # --- Transition entropy (beat i -> beat i+1) ---
+#     if len(labels) >= 2:
+#         trans = np.zeros((k, k), dtype=np.float64)
+#         for a, b in zip(labels[:-1], labels[1:]):
+#             trans[a, b] += 1
+#         row_sums = trans.sum(axis=1, keepdims=True)
+#         row_sums[row_sums == 0] = 1
+#         trans_prob = trans / row_sums
+#         # row-wise entropy, weighted by how often each state is visited
+#         state_freq = counts / counts.sum()
+#         trans_ent  = 0.0
+#         for i in range(k):
+#             row = trans_prob[i]
+#             row = row[row > 0]
+#             if len(row) > 1:
+#                 trans_ent += state_freq[i] * float(-np.sum(row * np.log(row)) / np.log(k))
+#     else:
+#         trans_ent = 0.0
 
-    return {
-        'morphology_entropy': morph_ent,
-        'transition_entropy': trans_ent,
-        'n_clusters':         float(k),
-    }
+#     return {
+#         'morphology_entropy': morph_ent,
+#         'transition_entropy': trans_ent,
+#         'n_clusters':         float(k),
+#     }
 
 def rr_regularity_score(ts, fs=150, min_gap=100):
     """
@@ -169,88 +167,338 @@ def rr_regularity_score(ts, fs=150, min_gap=100):
     cv = rr.std() / (rr.mean() + 1e-8)
     return float(np.clip(1.0 - cv, 0.0, 1.0))
 
-def extract_ecg_features(ts, fs=150):
-    """
-    General intrinsic ECG features for a single time series.
+def ts_to_tsfresh_df(ts, ts_id=0):
+    return pd.DataFrame({
+        'id':    ts_id,
+        'time':  np.arange(len(ts)),
+        'value': np.asarray(ts, dtype=np.float64),
+    })
 
-    Features
-    --------
-    kurtosis          — R-peaks create high excess kurtosis
-    skewness          — R-peaks create positive skew
-    std               — amplitude scale
-    sample_entropy    — regularity / complexity (m=2, r=0.2·σ)
-    dominant_freq     — should fall in HR band 0.5–3 Hz
-    spectral_entropy  — low for periodic (ECG) signals
-    psd_ratio         — fraction of power in 0.5–40 Hz ECG band
-    autocorr_peak_lag — lag (s) of first autocorrelation peak (HR period)
-    autocorr_peak_val — strength of that peak (high → periodic)
+
+def ts_entropy(ts, m=100, epsilon=3.0):
+    """
+    Subsequence-level pattern entropy via epsilon-clustering on z-normalized
+    Euclidean distance. Returns normalized Shannon entropy in [0, 1].
+    0 = perfectly regular (all beats identical), 1 = maximum disorder.
+    """
+    ts = np.asarray(ts, dtype=np.float64)
+    if len(ts) < 2 * m:
+        return float('nan')
+
+    nb_patterns = len(ts) // m
+    prototypes, counts = [], []
+
+    for i in range(nb_patterns):
+        current = ts[i*m:(i+1)*m]
+        a = (current - current.mean()) / (current.std() + 1e-8)
+
+        if not prototypes:
+            prototypes.append(a)
+            counts.append(1)
+            continue
+
+        dists = np.array([np.linalg.norm(a - p) for p in prototypes])
+        j = np.argmin(dists)
+        if dists[j] < epsilon:
+            counts[j] += 1
+        else:
+            prototypes.append(a)
+            counts.append(1)
+
+    counts = np.asarray(counts, dtype=np.float64)
+    probs  = counts / counts.sum()
+    if len(probs) <= 1:
+        return 0.0
+    return float(scipy_entropy(probs) / np.log(len(probs)))
+
+_ROBUST_EEG_KEYS = {
+    'iaf', 'entropy', 'spectral_entropy', 'offset', 'mean',
+    'total_power_log', 'exponent', 'hjorth_complexity',
+    'alpha_bandwidth', 'gamma_env_mean',
+}
+
+def extract_eeg_features(ts, fs=500, robust=False):
+    """
+    Single-channel EEG features for biometric reidentification.
+
+    Band powers use a 4th-order Butterworth filter-bank (accurate on short
+    segments regardless of length).  Features that need a frequency axis
+    (IAF, SEF95, FWP, aperiodic) use zero-padded Welch for fine bin spacing.
+    Features chosen for cross-session stability (Palaniappan & Mandic 2007,
+    La Rocca et al. 2014, Maiorana et al. 2016).
     """
     ts = np.asarray(ts, dtype=np.float64)
     n  = len(ts)
+    nyq = fs / 2.0
 
-    # --- Sample entropy (m=2, Chebyshev template matching), measure of complexity  ---
-    def _sample_entropy(x, m=2, r_coeff=0.2):
-        r   = r_coeff * (np.std(x) + 1e-8)
-        win_m  = np.lib.stride_tricks.sliding_window_view(x, m)      # (n-m+1, m)
-        win_m1 = np.lib.stride_tricks.sliding_window_view(x, m + 1)  # (n-m,   m+1)
-        B, A = 0, 0
-        for i in range(len(win_m1) - 1):
-            B += int(np.sum(np.max(np.abs(win_m[i+1:]  - win_m[i]),  axis=1) < r))
-            A += int(np.sum(np.max(np.abs(win_m1[i+1:] - win_m1[i]), axis=1) < r))
-        return -np.log((A + 1e-8) / (B + 1e-8)) if B > 0 else 0.0
+    # FFT-based features (frequency domain)
+    fft = np.abs(np.fft.fft(ts))
+    low_freq = np.sum(fft[:len(fft)//4])
+    mid_freq = np.sum(fft[len(fft)//4:len(fft)//2])
+    peak_freq = np.max(fft)
+    peak_freq_ind = np.argmax(fft)
 
-    # --- Time domain ---
-    kurt_val  = float(kurtosis(ts))
-    skew_val  = float(skew(ts))
-    std_val   = float(np.std(ts))
-    samp_ent  = _sample_entropy(ts)
-    beat_ent  = ts_entropy(ts, fs=fs)
+    # Entropy-based feature
+    hist, _ = np.histogram(ts, bins=10)
+    hist = hist / np.sum(hist)
+    entropy = -np.sum(hist * np.log(hist + 1e-10))
 
-    # --- Frequency domain (Welch PSD) ---
-    nperseg       = min(n, 256)
-    freqs, psd    = scipy_welch(ts, fs=fs, nperseg=nperseg)
-    psd_sum       = psd.sum() + 1e-12
-    dominant_freq = float(freqs[np.argmax(psd[1:]) + 1])          # skip DC
-    psd_norm      = psd / psd_sum
-    spectral_ent  = float(-np.sum(psd_norm * np.log(psd_norm + 1e-12))
-                          / np.log(len(psd_norm) + 1e-12))
-    psd_ratio     = float(psd[(freqs >= 0.5) & (freqs <= 40.0)].sum() / psd_sum)
+    # Zero crossing rate
+    x_centered = ts - np.mean(ts)
+    zeros = np.sum(np.abs(np.diff(np.sign(x_centered)))) / (2 * len(ts))
 
-    # --- Autocorrelation peak (first peak in HR lag range) ---
-    ts_c = ts - ts.mean()
-    ac   = np.correlate(ts_c, ts_c, mode='full')[n-1:]
-    ac  /= (ac[0] + 1e-12)
-    lag_min = max(1, int(fs * 0.25))            # 250 ms → 240 bpm max
-    lag_max = min(len(ac) - 1, int(fs * 2.0))   # 2 s   →  30 bpm min
-    if lag_min < lag_max:
-        seg               = ac[lag_min:lag_max]
-        pk                = int(np.argmax(seg))
-        autocorr_peak_lag = float((lag_min + pk) / fs)
-        autocorr_peak_val = float(seg[pk])
+    # Autocorrelation at lag 1
+    acf = np.correlate(x_centered, x_centered, mode='full')
+    lag1_corr = acf[len(acf)//2 + 1] / (acf[len(acf)//2] + 1e-10)
+
+    # --- Filter-bank: one pass per band gives power + Hilbert envelope stats ---
+    total_var = float(np.var(ts)) + 1e-12
+
+    def _band_features(lo, hi):
+        hi_c = min(hi, nyq - 0.5)
+        if lo >= hi_c:
+            return 0.0, 0.0, 0.0
+        b, a = butter(4, [lo / nyq, hi_c / nyq], btype='band')
+        filtered  = filtfilt(b, a, ts)
+        power     = float(np.var(filtered)) / total_var
+        envelope  = np.abs(hilbert(filtered))
+        env_mean  = float(envelope.mean())
+        env_var   = float(envelope.var()) / total_var
+        return power, env_mean, env_var
+
+    delta, delta_env_mean, delta_env_var = _band_features(0.5, 4)
+    theta, theta_env_mean, theta_env_var = _band_features(4,   8)
+    alpha, alpha_env_mean, alpha_env_var = _band_features(8,  13)
+    beta,  beta_env_mean,  beta_env_var  = _band_features(13, 30)
+    gamma, gamma_env_mean, gamma_env_var = _band_features(30, min(nyq - 0.5, 45.0))
+
+    # --- Zero-padded Welch for features that need a frequency axis ---
+    # nperseg = n uses the full segment; nfft zero-pads for ~0.1 Hz bin spacing
+    nfft = max(4096, 2 * n)
+    freqs, psd = scipy_welch(ts, fs=fs, nperseg=n, nfft=nfft)
+    total_pwr  = psd.sum()
+
+    # Frequency-Weighted Power (Monsy et al., IET Biometrics 2020)
+    total_fwp = float((freqs * psd).sum()) + 1e-12
+    def _fwp(fmin, fmax):
+        mask = (freqs >= fmin) & (freqs < fmax)
+        return float((freqs[mask] * psd[mask]).sum() / total_fwp)
+
+    fwp_delta = _fwp(0.5, 4)
+    fwp_theta = _fwp(4, 8)
+    fwp_alpha = _fwp(8, 13)
+    fwp_beta  = _fwp(13, 30)
+    fwp_gamma = _fwp(30, min(nyq - 0.5, 45.0))
+
+    # Individual Alpha Frequency — peak within 8–13 Hz
+    a_mask = (freqs >= 8) & (freqs <= 13)
+    if a_mask.any():
+        a_psd   = psd[a_mask]
+        a_freqs = freqs[a_mask]
+        iaf     = float(a_freqs[np.argmax(a_psd)])
+        above   = a_psd >= a_psd.max() / 2.0
+        alpha_bw = float(a_freqs[above].max() - a_freqs[above].min()) if above.sum() >= 2 else 0.0
     else:
-        autocorr_peak_lag, autocorr_peak_val = 0.0, 0.0
+        iaf, alpha_bw = 10.0, 0.0
+
+    # Spectral edge frequency: frequency below which 95% of power lies
+    cumpow  = np.cumsum(psd)
+    sef_idx = np.searchsorted(cumpow, 0.95 * cumpow[-1])
+    sef95   = float(freqs[min(sef_idx, len(freqs) - 1)])
+
+    # Normalised spectral entropy
+    psd_norm     = psd / total_pwr
+    spectral_ent = float(
+        -np.sum(psd_norm * np.log(psd_norm + 1e-12)) / np.log(len(psd_norm) + 1e-12)
+    )
+
+    # Hjorth parameters — mobility and complexity are stable EEG identity cues
+    dx   = np.diff(ts)
+    ddx  = np.diff(dx)
+    var_x   = np.var(ts)   + 1e-12
+    var_dx  = np.var(dx)   + 1e-12
+    var_ddx = np.var(ddx)  + 1e-12
+    hjorth_mobility   = float(np.sqrt(var_dx / var_x))
+    hjorth_complexity = float(np.sqrt(var_ddx / var_dx) / (hjorth_mobility + 1e-12))
+
+    kurt = kurtosis(ts)
+    mean = np.mean(ts)
+    std  = np.std(ts)
+
+    aperiodic = fit_aperiodic(freqs, psd)
+
+    # --- Higuchi Fractal Dimension ---
+    def _higuchi_fd(x, kmax=8):
+        n = len(x)
+        L = []
+        for k in range(1, kmax + 1):
+            Lk = []
+            for m in range(1, k + 1):
+                count = (n - m) // k
+                if count < 1:
+                    continue
+                idx = m - 1 + np.arange(1, count + 1) * k
+                Lmk = np.sum(np.abs(x[idx] - x[idx - k])) * (n - 1) / (count * k * k)
+                Lk.append(Lmk)
+            if Lk:
+                L.append(np.mean(Lk))
+        if len(L) < 2:
+            return 1.5
+        slope, _ = np.polyfit(np.log(np.arange(1, len(L) + 1)),
+                              np.log(np.array(L) + 1e-12), 1)
+        return float(-slope)
+
+    hfd = _higuchi_fd(ts)
+
+    # --- AR coefficients via Yule-Walker (order 8) ---
+    _AR_ORDER = 8
+
+    def _ar_coeffs(x, order=_AR_ORDER):
+        x = x - x.mean()
+        n = len(x)
+        acf = np.array([np.dot(x[:n - k], x[k:]) / (n - k) for k in range(order + 1)])
+        R = np.array([[acf[abs(i - j)] for j in range(order)] for i in range(order)])
+        try:
+            return np.linalg.solve(R, acf[1:order + 1])
+        except np.linalg.LinAlgError:
+            return np.zeros(order)
+
+    ar = _ar_coeffs(ts)
+
+    all_feats = {
+    # 'kurtosis':           kurt,
+    'mean':               mean,
+    'std':                std,
+    'entropy':            entropy,
+    'delta_power':        delta,
+    'theta_power':        theta,
+    'alpha_power':        alpha,
+    'beta_power':         beta,
+    'gamma_power':        gamma,
+    'iaf':                iaf,
+    'alpha_bandwidth':    alpha_bw,
+    'sef95':              sef95,
+    # 'theta_alpha_ratio':  float(theta / (alpha + 1e-8)),
+    # 'delta_alpha_ratio':  float(delta / (alpha + 1e-8)),
+    # 'alpha_beta_ratio':   float(alpha / (beta  + 1e-8)),
+    'spectral_entropy':   spectral_ent,
+    # 'total_power_log':    float(np.log(total_pwr)),
+    'hjorth_mobility':    hjorth_mobility,
+    'hjorth_complexity':  hjorth_complexity,
+    'offset':             aperiodic["offset"],
+    'exponent':           aperiodic["exponent"],
+    #Frequency-Weighted Power (Monsy et al., IET Biometrics 2020)
+    'fwp_delta':          fwp_delta,
+    'fwp_theta':          fwp_theta,
+    'fwp_alpha':          fwp_alpha,
+    'fwp_beta':           fwp_beta,
+    'fwp_gamma':          fwp_gamma,
+    # Higuchi Fractal Dimension
+    'hfd':                hfd,
+    # AR(8) coefficients via Yule-Walker
+    'ar_1':               float(ar[0]),
+    'ar_2':               float(ar[1]),
+    # 'ar_3':               float(ar[2]),
+    # 'ar_4':               float(ar[3]),
+    # 'ar_5':               float(ar[4]),
+    # 'ar_6':               float(ar[5]),
+    # 'ar_7':               float(ar[6]),
+    # 'ar_8':               float(ar[7]),
+    # Hilbert envelope stats per band (mean amplitude + normalised variance)
+    'delta_env_mean':     delta_env_mean,
+    'delta_env_var':      delta_env_var,
+    'theta_env_mean':     theta_env_mean,
+    'theta_env_var':      theta_env_var,
+    'alpha_env_mean':     alpha_env_mean,
+    'alpha_env_var':      alpha_env_var,
+    'beta_env_mean':      beta_env_mean,
+    'beta_env_var':       beta_env_var,
+    'gamma_env_mean':     gamma_env_mean,
+    'gamma_env_var':      gamma_env_var,
+
+    }
+    if robust:
+        return {k: v for k, v in all_feats.items() if k in _ROBUST_EEG_KEYS}
+    return all_feats
+
+
+def extract_eeg_features_bis(ts, fs=500):
+    # FFT-based features (frequency domain)
+    fft = np.abs(np.fft.fft(ts))
+    low_freq = np.sum(fft[:len(fft)//4])
+    mid_freq = np.sum(fft[len(fft)//4:len(fft)//2])
+    peak_freq = np.max(fft)
+    peak_freq_ind = np.argmax(fft)
     
-    # --- RR regulation ---
-    rr = rr_regularity_score(ts, fs=fs)
+    # Entropy-based feature
+    hist, _ = np.histogram(ts, bins=10)
+    hist = hist / np.sum(hist)
+    entropy = -np.sum(hist * np.log(hist + 1e-10))
+
+    # Zero crossing rate
+    x_centered = ts - np.mean(ts)
+    zeros = np.sum(np.abs(np.diff(np.sign(x_centered)))) / (2 * len(ts))
+
+    # Autocorrelation at lag 1
+    acf = np.correlate(x_centered, x_centered, mode='full')
+    lag1_corr = acf[len(acf)//2 + 1] / (acf[len(acf)//2] + 1e-10)
 
     return {
-        'kurtosis':             kurt_val,
-        'skewness':             skew_val,
-        'std':                  std_val,
-        'sample_entropy':       samp_ent,
-        'dominant_freq':        dominant_freq,
-        'spectral_entropy':     spectral_ent,
-        'psd_ratio':            psd_ratio,
-        'autocorr_peak_lag':    autocorr_peak_lag,
-        'autocorr_peak_val':    autocorr_peak_val,
-        'rr_regulation':        rr,
-        'morphology_entropy':   beat_ent['morphology_entropy'],
-        'transition_entropy':   beat_ent['transition_entropy'],
-        'n_beat_clusters':      beat_ent['n_clusters'],
+        "low_freq": low_freq,
+        "mid_freq": mid_freq,
+        "peak_freq": peak_freq,
+        "peak_freq_ind": peak_freq_ind,
+        "entropy": entropy,
+        "zeros": zeros,
+        "lag1_corr": lag1_corr
+    }
+
+def aperiodic_model(log_freqs, offset, exponent):
+    """Linear model in log-log space: log P = offset - exponent * log f"""
+    return offset - exponent * log_freqs
+
+def fit_aperiodic(freqs, psd, freq_range=(1, 40)):
+    """
+    Fit the aperiodic 1/f component and return parameters + R².
+    
+    freqs     : frequency array (Hz)
+    psd       : power spectral density array
+    freq_range: frequency range to fit over
+    """
+    # Select frequency range
+    mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
+    freqs_fit = freqs[mask]
+    psd_fit = psd[mask]
+    
+    # Work in log-log space
+    log_freqs = np.log10(freqs_fit)
+    log_psd = np.log10(psd_fit)
+    
+    # Fit linear model (offset + slope)
+    params, _ = curve_fit(aperiodic_model, log_freqs, log_psd,
+                          p0=[1.0, 1.0], maxfev=5000)
+    offset, exponent = params
+    
+    # Predicted values
+    log_psd_hat = aperiodic_model(log_freqs, offset, exponent)
+    
+    # R² in log-log space
+    ss_res = np.sum((log_psd - log_psd_hat) ** 2)
+    ss_tot = np.sum((log_psd - np.mean(log_psd)) ** 2)
+    r2 = 1 - ss_res / ss_tot
+    
+    return {
+        "offset": offset,
+        "exponent": exponent,
+        "r2": r2,
+        "fitted_psd": 10 ** log_psd_hat,
+        "freqs": freqs_fit
     }
 
 
-def extract_ecg_features_bis(ts, fs=150):
+
+
+def extract_ecg_features(ts, fs=150):
     """
     Morphology-focused ECG features for person re-identification.
 
@@ -410,7 +658,8 @@ def extract_ecg_features_bis(ts, fs=150):
         template = beats.mean(axis=0)
 
         # Baseline: mean of first 50 ms
-        baseline = template[: int(0.05 * beat_len)].mean()
+        baseline_win = template[: max(1, int(0.05 * beat_len))]
+        baseline = baseline_win.mean()
 
         # R amplitude
         r_amp = np.max(template)
@@ -519,18 +768,18 @@ def extract_ecg_features_bis(ts, fs=150):
         'pow_0p5_5':            pow_0p5_5,
         'pow_5_15':             pow_5_15,
         'pow_15_40':            pow_15_40,
-        'pow_40p':              pow_40p,
+        # 'pow_40p':              pow_40p,
         'qrs_band_ratio':       qrs_band_ratio,
         'autocorr_peak_lag':    autocorr_peak_lag,
         'autocorr_peak_val':    autocorr_peak_val,
         # --- new: fiducial amplitudes & ratios ---
         'r_amplitude':          r_amplitude,
-        't_amplitude':          t_amplitude,
+        # 't_amplitude':          t_amplitude,
         # 's_amplitude':          s_amplitude,
         # 'rt_ratio':             rt_ratio,
         # 'rs_ratio':             rs_ratio,
         # # --- new: QRS geometry ---
-        'qrs_width_ms':         qrs_width_ms,
+        # 'qrs_width_ms':         qrs_width_ms,
         'qrs_area':             qrs_area,
         # 'st_level':             st_level,
         # # --- new: T-wave ---
@@ -553,3 +802,4 @@ def extract_ecg_features_bis(ts, fs=150):
         # 'wavelet_entropy':      wavelet_entropy,
         'wavelet_qrs_ratio':    wavelet_qrs_ratio,
     }
+

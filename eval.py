@@ -1,38 +1,69 @@
 import numpy as np
-import os, sys, json
+import os, sys, json, re
 from scipy import stats
 import matplotlib.pyplot as plt
 import stumpy
 import matplotlib
 from src.utils_matrix_profile import build_mp_embedding
 from dtaidistance import dtw
-import wfdb
-from tslearn.metrics import dtw
+import wfdb, mne
 from scipy.spatial.distance import euclidean
-from scipy.stats import entropy
-from collections import Counter
+from scipy.stats import entropy, kurtosis
 import pandas as pd
-from ecg_features import extract_ecg_features_bis
+from features_extraction import extract_ecg_features, extract_eeg_features
 from sklearn.preprocessing import StandardScaler
-
-def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, stat="mean"):
+from src.utils import pearson_correlation, normalize, rmse_inv_check, partial_rmse, partial_pearson_correlation, detection_peak, cardiac_frequency, delta_loss, alpha_loss, entropy_loss, kurtosis_loss
+def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, stat="mean", dataset = "ecg", ipopt=False):
     mse_list = []
     for folder in os.listdir(base_folder):
         eval_folder = os.path.join(base_folder, folder)
-        if os.path.isdir(eval_folder) and folder.startswith("ecg_"):
+        if dataset == "ecg":
+            if os.path.isdir(eval_folder) and re.fullmatch(r"ecg_\d+", folder):
+                res_file = os.path.join(eval_folder, "results.json")
+                with open(res_file) as json_data:
+                    d = json.load(json_data)
+                    if ipopt:
+                        ts_original = np.array(d["time_series"])
+                        ts_fake = np.array(d["solutions"][0])
+                    
+                    else:
+                        ts_original = np.array(d["data"])
+                        ts_fake = np.array(d["fake_data"])
+        elif dataset == "eeg":
+            if os.path.isdir(eval_folder) and re.fullmatch(r"eeg_\d+", folder):
+                res_file = os.path.join(eval_folder, "results.json")
+                with open(res_file) as json_data:
+                    d = json.load(json_data)
+                    if ipopt:
+                        ts_original = np.array(d["time_series"])
+                        ts_fake = np.array(d["smoothed"])
+                        # ts_fake = np.array(d["solutions"][0])
+                    
+                    else:
+                        ts_original = np.array(d["data"])
+                        ts_fake = np.array(d["fake_data"])
+
+        if (loss_function.__name__ == "partial_pearson_correlation") or (loss_function.__name__ == "partial_rmse"):
+            loss = loss_function(ts_original, ts_fake, m=m, epsilon=epsilon)
+        else:
+            loss = loss_function(ts_original, ts_fake, epsilon)
+        mse_list.append(loss)
+    if stat == "mean":
+        return(np.nanmean(mse_list))
+    if stat== "max":
+        return(np.max(mse_list))
+    if stat=="min":
+        return(np.min(mse_list))
+
+def compute_utility_loss_from_folder(base_folder, stat="mean"):
+    mse_list = []
+    for folder in os.listdir(base_folder):
+        eval_folder = os.path.join(base_folder, folder)
+        if os.path.isdir(eval_folder) and re.fullmatch(r"ecg_\d+", folder):
             res_file = os.path.join(eval_folder, "results.json")
             with open(res_file) as json_data:
                 d = json.load(json_data)
-                # ts_original = np.array(d["time_series"])
-                ts_original = np.array(d["data"])
-                # ts_fake = np.array(d["solutions"][0])
-                ts_fake = np.array(d["fake_data"])
-                if loss_function.__name__ == "partial_pearson_correlation":
-                    loss = loss_function(ts_original, ts_fake, m=m)
-                elif (loss_function.__name__ == "partial_pearson_correlation") or (loss_function.__name__ == "partial_rmse"):
-                    loss = loss_function(ts_original, ts_fake, m=m, epsilon=epsilon)
-                else:
-                    loss = loss_function(ts_original, ts_fake, epsilon)
+                loss = d["utility_loss"]
                 mse_list.append(loss)
     if stat == "mean":
         return(np.mean(mse_list))
@@ -40,73 +71,6 @@ def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, sta
         return(np.max(mse_list))
     if stat=="min":
         return(np.min(mse_list))
-    
-def pearson_correlation(x, y, threshold=None):
-    """Compute the Pearson correlation between two time series x and y."""
-    pcc = 0
-    if np.all(x == y) or np.all(x == -y):
-        pcc = 1.0
-    elif np.all(x == x[0]) or np.all(y == y[0]):
-        pcc = 0
-    else:
-        pcc = stats.pearsonr(x, y).statistic
-        if pcc<0:
-            pcc = -pcc
-    if threshold is not None:
-        pcc = (round(pcc,1) >= threshold)
-    return pcc
-
-def partial_pearson_correlation(x, y, m, epsilon=None):
-    n_patterns = len(x) - m + 1
-    pccs = []
-    for i in range(n_patterns):
-        pcc = pearson_correlation(x[i:i+m], y[i:i+m])
-        pccs.append(pcc)
-    pcc = np.max(pccs)
-    if epsilon is not None:
-        return round(pcc, 1)>=epsilon
-    else:
-        return pcc
-    
-def mse(x, y):
-    return ((x-y)**2).mean()
-
-def rmse(x, y):
-    x = np.asarray(x)
-    y = np.asarray(y)
-    return np.sqrt(np.mean((x - y) ** 2))
-
-def rmse_inv_check(list1, list2, epsilon=None):
-    list1 = np.asarray(list1)
-    list2 = np.asarray(list2)
-
-    n1 = normalize(list1)
-    n2 = normalize(list2)
-    n2_inv = normalize(-list2)
-
-    rmse = np.min([np.sqrt(np.mean((n1 - n2) ** 2)), np.sqrt(np.mean((n1 - n2_inv) ** 2))])
-    if epsilon is not None:
-        return round(rmse, 1) <= epsilon
-    else:
-        return rmse
-
-def partial_rmse(x, y, m, epsilon=None):
-    n_patterns = len(x) - m + 1
-    pccs = []
-    for i in range(n_patterns):
-        pcc = rmse_inv_check(x[i:i+m], y[i:i+m])
-        pccs.append(pcc)
-    rmse = np.min(pccs)
-    if epsilon is not None:
-        return round(rmse, 1)<=epsilon
-    else:
-        return rmse
-
-
-def zdtw(a, b):
-    a = (a - a.mean()) / (a.std() + 1e-8)
-    b = (b - b.mean()) / (b.std() + 1e-8)
-    return dtw(a, b)
 
 def ts_entropy(
     ts,
@@ -252,104 +216,21 @@ def parse_similar_mp_folders(base_folder, m=100):
 
     return matching_folders
 
-
-def plot_rank_distribution(
-    ranks,
-    save_path,
-    xlabel="Rank range",
-    ylabel="Count",
-    title="Rank Distribution for person 1",
-    ccdf=False,
-    threshold=0.75
-):
-    ranks = np.asarray(ranks, dtype=int)
-
-    if np.any(ranks < 0):
-        raise ValueError("Ranks must be >= 0")
-
-    if ccdf:
-        sorted_ranks = np.sort(ranks)
-        n = len(sorted_ranks)
-        ccdf_values = np.arange(1, n + 1) / n
-
-        fig, ax = plt.subplots()
-        ax.plot(sorted_ranks, ccdf_values)
-
-        # Find first point where cumulative accuracy >= threshold
-        idx = np.searchsorted(ccdf_values, threshold, side="left")
-        idx = min(idx, n - 1)
-        x_cross = sorted_ranks[idx]
-        y_cross = ccdf_values[idx]
-
-        ax.axhline(y=y_cross, color="red", linestyle="--", linewidth=1)
-        ax.axvline(x=x_cross, color="red", linestyle="--", linewidth=1)
-        ax.annotate(
-            f"({x_cross}, {y_cross:.2f})",
-            xy=(x_cross, y_cross),
-            xytext=(x_cross + max(sorted_ranks) * 0.03, y_cross - 0.06),
-            fontsize=9,
-            color="red",
-            arrowprops=dict(arrowstyle="->", color="red", lw=0.8),
-        )
-
-        ax.set_xlabel("Rank")
-        ax.set_ylabel("Cumulative Accuracy")
-        ax.set_title(title)
-        fig.savefig(save_path)
-        print(f"Plot saved in {save_path}")
-        return
-
-    rank_counts = Counter(ranks)
-    max_rank = ranks.max()
-
-    # Define fixed rank bins (5 bars)
-    bins = [0, 1, 10, 100, 1000, max_rank + 1]
-
-    # Count occurrences per bin
-    bin_counts = []
-    bin_labels = []
-
-    for i in range(len(bins) - 1):
-        start, end = bins[i], bins[i + 1]
-        c = sum(v for k, v in rank_counts.items() if start <= k < end)
-        bin_counts.append(c)
-
-        if end == max_rank + 1:
-            bin_labels.append(f"{start}+")
-        else:
-            bin_labels.append(f"{start}–{end-1}")
-
-    # Plot
-    fig = plt.figure()
-    bars = plt.bar(bin_labels, bin_counts)
-
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.title(title)
-
-    # Annotate counts
-    for bar, count in zip(bars, bin_counts):
-        if count > 0:
-            plt.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                str(count),
-                ha="center",
-                va="bottom",
-                fontsize=9
-            )
-
-    # plt.show()
-    fig.savefig(save_path)
-    print(f"Plot saved in {save_path}")
-
-def normalize(time_series : np.ndarray) -> np.ndarray:
-    return (time_series - time_series.min()) / (time_series.max() - time_series.min())
-
 def znormalize(time_series : np.ndarray) -> np.ndarray:
     return (time_series - time_series.mean()) / (time_series.std() + 1e-8)
 
-def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_features=False, metric=euclidean):
+def _mp_vector(ts: np.ndarray, m: int) -> np.ndarray:
+    """Return a normalized concatenation of MPD and MPI for a 1-D time series."""
+    profile = stumpy.stump(ts.astype(np.float64), m=m)
+    mpd = profile[:, 0].astype(np.float64)
+    mpi = profile[:, 1].astype(np.float64)
+    L = len(mpd)
+    mpd_norm = (mpd - mpd.min()) / (mpd.max() - mpd.min() + 1e-8)
+    mpi_norm = mpi / (L - 1 + 1e-8)
+    return np.concatenate([mpd_norm, mpi_norm])
+
+
+def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_features=False, using_mp=False, metric=euclidean, agg="mean"):
     """
     Conformal prediction-based re-identification attack.
 
@@ -361,8 +242,10 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
     :param base_folder_test: Base folder containing per-result subfolders
     :param dataset: Dataset used ("ptbxl" or "arrhythmia")
     :param ref_index: List of start indices for reference subsequences
-    :param using_features: (unused) Enable using features instead of raw time series
+    :param using_features: Enable using hand-crafted features instead of raw time series
+    :param using_mp: Enable using matrix profile (MPD ++ MPI, normalized) instead of raw time series
     :param metric: Distance callable(x, y) -> float; lower = more similar (default: euclidean)
+    :param agg: How to aggregate distances across ref_index windows — "mean" or "min" (default: "mean")
     :return: List of 0-indexed ranks of the true patient among all candidates
     """
     if n - m + 1 <= 0:
@@ -377,12 +260,20 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
     if dataset == "ptbxl":
         list_patient = pd.read_csv("data/physionet.org/files/ptbxl_database.csv")["filename_lr"]
         files = list_patient[21000:21200]
-    elif dataset in("arrhythmia", "arrhythmia_xl"):
+    elif dataset in ("arrhythmia", "arrhythmia_xl"):
         with open("data/physionet.org/files/ecg-arrhythmia/records100/RECORDS", "r") as f:
             list_patient = f.read().splitlines()
         files = [os.path.join("data/physionet.org/files/ecg-arrhythmia/records100/", file + ".npy") for file in list_patient]
+    elif dataset == "ltdb":
+        with open("data/physionet.org/files/ltdb/records100/RECORDS", "r") as f:
+            list_patient = f.read().splitlines()
+        files = [os.path.join("data/physionet.org/files/ltdb/records100/", file+".npy") for file in list_patient]
+    elif dataset == "tdbrain":
+        file_root = os.path.join( "data", "TDBRAIN-dataset")
+        list_patient = pd.read_csv(os.path.join(file_root, "participants.tsv"), sep="\t")["participant_id"].tolist()
+        files = [os.path.join(file_root, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr") for file in list_patient[1000:1200]]
     else:
-        raise ValueError(f"Unknown dataset: {dataset!r}. Expected 'ptbxl' or 'arrhythmia'.")
+        raise ValueError(f"Unknown dataset: {dataset!r}. Expected 'ptbxl', 'arrhythmia' or 'ltdb'.")
 
     # print(f"Will take {n} points from indices: {ref_index}")
 
@@ -390,15 +281,24 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
         if dataset == "ptbxl":
             record = wfdb.rdrecord(os.path.join("data/physionet.org/files/", file))
             signal = record.p_signal[:, 0].astype(np.float64)
-        elif dataset in ("arrhythmia","arrhythmia_xl"):
+        elif dataset in ("arrhythmia","arrhythmia_xl", "ltdb"):
             signal = np.load(file)
+        elif dataset == "tdbrain":
+            raw = mne.io.read_raw_brainvision(file, preload=True, verbose=False)
+            signal = raw.get_data(picks=0)[0].astype(np.float64)
 
         ref_attacker_person = [normalize(signal[index:index + n]) for index in ref_index]
         if using_features:
-            ts_ref_features = [extract_ecg_features_bis(ts_ref, fs=100) for ts_ref in ref_attacker_person]
+            if dataset == "tdbrain":
+                ts_ref_features = [extract_eeg_features(ts_ref, fs=500) for ts_ref in ref_attacker_person]
+            else:
+                ts_ref_features = [extract_ecg_features(ts_ref, fs=100) for ts_ref in ref_attacker_person]
             if len(feature_keys) == 0:
                 feature_keys = list(ts_ref_features[0].keys())
             ref_attacker_person = [np.array([ts_ref_feat[key] for key in feature_keys]) for ts_ref_feat in ts_ref_features]
+
+        if using_mp:
+            ref_attacker_person = [_mp_vector(ts_ref, m) for ts_ref in ref_attacker_person]
 
         ref_attacker.append(ref_attacker_person)
 
@@ -427,60 +327,78 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
             [all_matrix_scaled[i * n_refs + j] for j in range(n_refs)]
             for i in range(n_persons)
         ]
-    plot_test_points_distribution(ref_attacker, feature_keys)
+    # plot_test_points_distribution(ref_attacker, feature_keys)
 
     # Load reconstructed time series from result subfolders
     ts_inverse = []
 
-    result_folders = sorted(
-        [d for d in os.listdir(base_folder_test) if os.path.isdir(os.path.join(base_folder_test, d)) and d.startswith("ecg_")],
-        key=lambda d: int(d.split("ecg_")[1])
-    )
-    print(result_folders)
+    if dataset == "tdbrain":
+        result_folders = sorted(
+            [d for d in os.listdir(base_folder_test) if os.path.isdir(os.path.join(base_folder_test, d)) and re.fullmatch(r"eeg_\d+", d)],
+            key=lambda d: int(d.split("eeg_")[1])
+        )
+    else:
+        result_folders = sorted(
+            [d for d in os.listdir(base_folder_test) if os.path.isdir(os.path.join(base_folder_test, d)) and d.startswith("ecg_")],
+            key=lambda d: int(d.split("ecg_")[1])
+        )
+    # print(result_folders)
 
     for folder in result_folders:
         result_path = os.path.join(base_folder_test, folder, "results.json")
         with open(result_path, "r") as f:
             res = json.load(f)
-        ts_inv = normalize(np.array(res["solutions"][0]))
-        # ts_inv = normalize(np.array(res["fake_data"]))
+            if dataset == "tdbrain":
+                ts_inv = normalize(np.array(res["smoothed"]))
+            else:
+                ts_inv = normalize(np.array(res["solutions"][0]))
         if using_features:
-            ts_inv_features = extract_ecg_features_bis(ts_inv, fs=100)
+            if dataset == "tdbrain":
+                ts_inv_features = extract_eeg_features(ts_inv, fs=500)
+            else:
+                ts_inv_features = extract_ecg_features(ts_inv, fs=100)
             if len(feature_keys) == 0:
                 feature_keys = list(ts_inv_features.keys())
             ts_inv = np.array([ts_inv_features[feat] for feat in feature_keys])
             # Apply the same cross-patient scaler fitted on reference features
             ts_inv = scaler.transform(ts_inv.reshape(1, -1)).flatten()
+        elif using_mp:
+            ts_inv = _mp_vector(ts_inv, m)
 
         ts_inverse.append(ts_inv)
         
-    # For each reconstructed ts, rank candidates by distance to reference subsequences
-    rank = []
-    for id_ts, ts_test in enumerate(ts_inverse):
-        # Mean distance across all reference indices for each candidate patient
+    def compute_rank(ts_test, id_label):
         distances = []
         for candidate_refs in ref_attacker:
-            dist = np.mean([
-                metric(ts_test, ref_subseq)
-                for ref_subseq in candidate_refs
-            ])
+            vals = [metric(ts_test, ref_subseq) for ref_subseq in candidate_refs]
+            dist = (np.min(vals) if agg == "min" else np.mean(vals)) if vals else float("nan")
             distances.append(dist)
-
-        # Sort ascending: lowest distance = most similar = rank 0
         if metric.__name__ == "pearson_correlation":
             sorted_candidates = sorted(enumerate(distances), key=lambda x: x[1], reverse=True)
         else:
             sorted_candidates = sorted(enumerate(distances), key=lambda x: x[1])
-
-        # Find the rank of the true original patient (id_ts)
-        id_label = int(id_ts / 5) if dataset=="arrhythmia_xl" else id_ts
-        rank_id = next(
-            r for r, (cand_id, _) in enumerate(sorted_candidates)
-            if cand_id == id_label
+        return next(
+            (r for r, (cand_id, _) in enumerate(sorted_candidates)
+            if cand_id == id_label),
+            len(sorted_candidates)
         )
+
+    # For each reconstructed ts, rank candidates by distance to reference subsequences
+    rank = []
+    for id_ts, ts_test in enumerate(ts_inverse):
+        if dataset == "arrhythmia_xl":
+            id_label = int(id_ts / 5) 
+        elif dataset == "ltdb":
+            id_label = int(id_ts/30)
+        else:
+            id_label = id_ts
+        rank_id = compute_rank(ts_test, id_label)
+        ts_test_inv = normalize(-ts_test)
+        rank_id_inv = compute_rank(ts_test_inv, id_label)
+        rank_id = min(rank_id, rank_id_inv)
         rank.append(rank_id)
-        if rank_id == 0:
-            print(id_ts)
+        # if rank_id == 0:
+            # print(id_ts)
         # print(f"{id_ts}:{rank_id}")
 
     return rank
@@ -515,43 +433,45 @@ if __name__ == "__main__":
     #     rank_0 = conformal_prediction(500, 100, f"src/results/baseline/n500m100/person{id_person}", 20000, [id_person])
     #     np.save(f"outputs/n200m10/disable_validation/rank_{id_person}.npy", rank_0)
     #     plot_rank_distribution(rank_0, f"outputs/n200m10/disable_validation/conformal_{id_person}.png", title=f"Rank Distribution for person {id_person}")
-    # base_test_folder = "src/results/baseline/2026-02-12_23:48:26"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-03-04_10:10:37"
-    # base_test_folder = "src/results/baseline/2026-03-19_01:02:19/"
-    # base_test_folder = "test/results/2026-03-30_10:54:17"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/arrhythmia/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ptbxl/"
+   
+    # DeepMP
     # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia/"
     # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia_xl/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_ltdb_128/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ltdb_128"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/2026-04-17_14:04:40"
-    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/ptbxl"
-    # base_test_folder = "src/results/ipopt/arrhythmia_xl"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/ptbxl/ptbxl/"
+    # base_test_folder = "test/results/ecg_ltdb_100"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/eeg/tdbrain"
 
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
-    print(f"PCC mean : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
-    print(f"PCC 0.7 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
-    print(f"PCC max : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
-    print(f"Partial PCC 0.7 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
-    print(f"RMSE : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
-    print(f"RMSE 0.1 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
-    print(f"RMSE min : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
-    print(f"Partial RMSE 0.1 : {loss_test}")
+    # DeepMP + IPOPT
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/arrhythmia/"
+    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ptbxl/"
+    # base_test_folder = "src/results/ipopt/arrhythmia_xl"
+    # base_test_folder = "src/results/ipopt/ltdb"
+    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/eeg"
+
+    loss_test = compute_loss_from_folder(base_test_folder, entropy_loss, epsilon=None, stat="mean", dataset="eeg", ipopt=True)
+    print(f"Peaks preservation : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, cardiac_frequency, epsilon=None, stat="mean", dataset="ecg", ipopt=False)
+    # print(f"BPM preservation : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
+    # print(f"PCC mean : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    # print(f"PCC 0.7 : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
+    # print(f"PCC max : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    # print(f"Partial PCC 0.7 : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
+    # print(f"RMSE : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
+    # print(f"RMSE 0.1 : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
+    # print(f"RMSE min : {loss_test}")
+    # loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
+    # print(f"Partial RMSE 0.1 : {loss_test}")
 
     # similar_folders = parse_similar_mp_folders(base_test_folder, m=100)
     # print(similar_folders)
-    # ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=True, dataset="arrhythmia_xl", metric=euclidean)
-    # plot_rank_distribution(ranks, "rank_distribution_arrhythmia_xl.png", title="Rank Distribution", ccdf=True)
-
-
+    
 
     # for id_p in range(1):
         # print(f"person{id_p}")
