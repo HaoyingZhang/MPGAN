@@ -14,7 +14,7 @@ from eval import conformal_prediction
 from eval import compute_loss_from_folder, compute_utility_loss_from_folder
 from reidentify import reidentification_attack
 from features_extraction import extract_ecg_features, extract_eeg_features
-
+import argparse
 
 
 def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_original: np.ndarray, ts_intermediate: np.ndarray|None, m: int, znorm: bool = True):
@@ -79,16 +79,16 @@ def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_origin
     ax_ts.plot(ts_deepmp, color="blue",  label=f"DeepMP Solution (PCC = {pcc_ts_blue:.2f})", linewidth=1.2)
     if ts_intermediate is not None:
         ax_ts.plot(ts_intermediate, color="red", linestyle="dotted", label="IPOPT Intermediate Solution", linewidth=1.0)
-    ax_ts.plot(ts_ipopt,  color="red",   label=f"IPOPT Solution (PCC = {pcc_ts_red:.2f})", linewidth=1.2)
-    ax_ts.plot(ts_original, color="gray",  label="Ground Truth", linewidth=1.2)
+    ax_ts.plot(ts_ipopt,  color="red",   label=f"DeepMP+IPOPT Solution (PCC = {pcc_ts_red:.2f})", linewidth=1.2)
+    ax_ts.plot(ts_original, color="green",  label="Ground Truth", linewidth=1.2)
     ax_ts.set_title("Time Series", fontsize=12)
     ax_ts.legend(fontsize=9)
 
     # --- bottom-left: MP distance ---
     ax_mpd.plot(mp_blue[:, 0], color="blue", label=f"MPD DeepMP (RMSE = {rmse_mpd_blue:.2f})", linewidth=1.2)
-    ax_mpd.plot(mp_red[:, 0],  color="red",  label=f"MPD IPOPT (RMSE = {rmse_mpd_red:.2f})", linewidth=1.2)
-    ax_mpd.plot(mp_gray[:, 0], color="gray", label="MPD Ground Truth", linewidth=1.2)
-    ax_mpd.set_title("Matrix Profile Distance", fontsize=12)
+    ax_mpd.plot(mp_red[:, 0],  color="red",  label=f"MPD DeepMP+IPOPT (RMSE = {rmse_mpd_red:.2f})", linewidth=1.2)
+    ax_mpd.plot(mp_gray[:, 0], color="green", label="MPD Ground Truth", linewidth=1.2)
+    ax_mpd.set_title("Matrix Profile Distance (MPD)", fontsize=12)
     ax_mpd.legend(fontsize=9)
 
     # --- bottom-right: MP index ---
@@ -97,11 +97,11 @@ def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_origin
     x_gray = np.arange(len(mp_gray))
 
     ax_mpi.scatter(x_blue, mp_blue[:, 1], color="blue", label=f"MPI DeepMP (Accuracy = {distance_mpi_blue:.2f})", s=4)
-    ax_mpi.scatter(x_red,  mp_red[:, 1],  color="red",  label=f"MPI IPOPT (Accuracy = {distance_mpi_red:.2f})", s=4)
-    ax_mpi.scatter(x_gray, mp_gray[:, 1], color="gray", label="MPI Ground Truth", s=4
+    ax_mpi.scatter(x_red,  mp_red[:, 1],  color="red",  label=f"MPI DeepMP+IPOPT (Accuracy = {distance_mpi_red:.2f})", s=4)
+    ax_mpi.scatter(x_gray, mp_gray[:, 1], color="green", label="MPI Ground Truth", s=4
                    , marker="."
                    )
-    ax_mpi.set_title("Matrix Profile Index", fontsize=12)
+    ax_mpi.set_title("Matrix Profile Index (MPI)", fontsize=12)
     ax_mpi.legend(fontsize=9)
 
     return fig
@@ -112,7 +112,8 @@ def plot_rank_distribution(
     title="Rank Distribution for person 1",
     threshold=0.75
 ):
-    fig, ax = plt.subplots()
+    fs_text = 16
+    fig, ax = plt.subplots(figsize=(5, 3))
 
     for key in rank_map.keys():
         ranks = rank_map[key]
@@ -139,7 +140,7 @@ def plot_rank_distribution(
                 f"({x_cross}, {y_cross:.2f})",
                 xy=(x_cross, y_cross),
                 xytext=(x_cross + max(sorted_ranks) * 0.03, y_cross - 0.06),
-                fontsize=13,
+                fontsize=fs_text,
                 color="red",
                 arrowprops=dict(arrowstyle="->", color="red", lw=0.8),
             )
@@ -148,17 +149,18 @@ def plot_rank_distribution(
                 f"({x_cross}, {y_cross:.2f})",
                 xy=(x_cross, y_cross),
                 xytext=(x_cross - max(sorted_ranks) * 0.03, y_cross + 0.1),
-                fontsize=13,
+                fontsize=fs_text,
                 color="red",
                 arrowprops=dict(arrowstyle="->", color="red", lw=0.8),
             )
 
-    ax.set_xlabel("Rank", fontsize=14)
-    ax.set_ylabel("Cumulative RIR", fontsize=14)
-    ax.set_title(title, fontsize=16)
-    ax.tick_params(labelsize=12)
-    ax.legend()
-    fig.savefig(save_path)
+    ax.set_xlabel("Rank", fontsize=fs_text)
+    ax.set_ylabel("Cumulative RIR", fontsize=fs_text)
+    # ax.set_title(title, fontsize=16)
+    ax.tick_params(labelsize=15)
+    ax.legend(loc="best", fontsize=fs_text)
+    fig.tight_layout()
+    fig.savefig(save_path, bbox_inches="tight")
     print(f"Plot saved in {save_path}")
     return
 
@@ -221,12 +223,12 @@ def plot_feature_relative_error_boxplot(
                 data = json.load(f)
 
             ref_raw = np.array(data.get("time_series", data.get("data")), dtype=np.float64)
-            # rec_raw = np.array(data["solutions"][0], dtype=np.float64)
-            rec_raw = np.array(data["smoothed"], dtype=np.float64)
+            rec_raw = np.array(data["solutions"][0], dtype=np.float64)
+            # rec_raw = np.array(data["smoothed"], dtype=np.float64)
 
             try:
-                f_ref = extract_eeg_features(ref_raw, fs=fs)
-                f_rec = extract_eeg_features(rec_raw, fs=fs)
+                f_ref = extract_ecg_features(ref_raw, fs=fs)
+                f_rec = extract_ecg_features(rec_raw, fs=fs)
             except Exception:
                 continue
 
@@ -316,151 +318,205 @@ def plot_feature_relative_error_boxplot(
 
 
 if __name__ == "__main__":
-    # deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_188/results.json"
-    # ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_188/results.json"
-    # deepmp_sol_path = "src/results/baseline/eeg/tdbrain/eeg_118/results.json"
-    # ipopt_sol_path = "src/results/ipopt/eeg/eeg_118/results.json"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--category", type=str, default="ecg", help="Dataset category")
+    parser.add_argument("--exp_name",type=str, choices=["robustness", "plot_ipopt", "conformal_prediction", "features"], help="Use solution after ipopt")
 
-    # with open(deepmp_sol_path, "r") as f:
-    #     res = json.load(f)
-    #     ts_deepmp = res["fake_data"]
-    #     ts_original = res["data"]
+    args = parser.parse_args()
+
+    if args.exp_name == "plot_ipopt":
+
+        deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_188/results.json"
+        # ipopt_only_path = "src/results/ipopt/ptbxl/ecg_188/results.json"
+        ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_188/results.json"
+        # deepmp_sol_path = "src/results/baseline/eeg/tdbrain/eeg_118/results.json"
+        # ipopt_sol_path = "src/results/ipopt/eeg/eeg_118/results.json"
+
+        with open(deepmp_sol_path, "r") as f:
+            res = json.load(f)
+            ts_deepmp = res["fake_data"]
+            ts_original = res["data"]
+            
+        with open(ipopt_sol_path, "r") as f:
+            res = json.load(f)
+            ts_ipopt = res["solutions"][0]
+            ts_smooth = res["smoothed"]
         
-    # with open(ipopt_sol_path, "r") as f:
-    #     res = json.load(f)
-    #     ts_ipopt = res["solutions"][0]
-    #     ts_smooth = res["smoothed"]
-    
-    # fig = plot_three_ts_with_mp(ts_deepmp, ts_smooth, ts_original, ts_ipopt, m=100, znorm=True)
-    # fig.savefig("paper_figures/compare_ipopt_eeg_new.jpg")
-
-    # Conformal prediction
-    # base_test_folder = "src/results/ipopt/ptbxl/"
-    # ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=True, dataset="ptbxl", metric=euclidean)
-    # ranks_mp = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=False, dataset="ptbxl", metric=euclidean, using_mp=True)
-    # plot_rank_distribution({"TS reconstructed": ranks, "MP": ranks_mp}, "paper_figures/rank_distribution_ptbxl.png", title="Rank Distribution", threshold=0.66)
+        # with open(ipopt_only_path, "r") as f:
+        #     res = json.load(f)
+        #     ts_ipopt_only = res["solutions"][0]
+        
+        fig = plot_three_ts_with_mp(ts_deepmp, ts_ipopt, ts_original, None, m=100, znorm=True)
+        fig.savefig("paper_figures/compare_ipopt_ecg.jpg")
+    if args.exp_name == "conformal_prediction":
+        # Conformal prediction
+        for dataset in ["arrhythmia", "ptbxl"]:
+            base_test_folder = f"src/results/ipopt/{dataset}/"
+            ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=True, dataset=dataset, metric=euclidean)
+            ranks_mp = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=False, dataset=dataset, metric=euclidean, using_mp=True)
+            plot_rank_distribution({"TS reconstructed": ranks, "MP": ranks_mp}, f"paper_figures/rank_distribution_{dataset}.png", title="Rank Distribution", threshold=0.66)
 
 
     # Robustness
-    # eval_type = "mpi"
-    # datasets = ["arrhythmia", "ptbxl"]
-    
-    # baseline_accuracy = {"arrhythmia":0.129, "ptbxl":0.045}
-    # test_id = {"arrhythmia":[0,48], "ptbxl":[21200,21400]}
-    # epsilon = [100.0,1000.0,10000.0,100000.0,500000.0,800000.0, 1000000.0,100000000.0]
-    
-    # root_path = os.path.join("src/results/baseline/ptbxl/")
+    if args.exp_name == "robustness":
+        print("Attention! This experiment could take long time!")
+        eval_types = ["mpd","mpi"]
+        fs_legend = 20
+        fs_text = 20
+        fs_label = 16
+        datasets = ["arrhythmia", "ptbxl"]
 
-    # results_path = os.path.join("src/results/baseline/ptbxl", f"eval_robustness_{eval_type}_results.json")
-    # os.makedirs(os.path.dirname(results_path), exist_ok=True)
-    # if os.path.exists(results_path):
-    #     with open(results_path) as f:
-    #         all_results = json.load(f)
-    # else:
-    #     all_results = {}
+        for eval_type in eval_types:
+        
+            baseline_accuracy = {"arrhythmia":0.129, "ptbxl":0.045}
+            test_id = {"arrhythmia":[0,48], "ptbxl":[21200,21400]}
+            epsilon = [100.0,1000.0,10000.0,100000.0,500000.0,800000.0, 1000000.0,100000000.0]
+            
+            root_path = os.path.join("src/results/baseline/ptbxl/")
 
-    # pcc_list = []
-    # accuracy_list = []
-    # utility_loss_list = []
-    # for dataset in datasets:
-    #     if dataset not in all_results:
-    #         all_results[dataset] = {}
-    #     dataset_res = []
-    #     reidentify = []
-    #     utility_loss = []
-    #     for eps in epsilon:
-    #         eps_key = str(eps)
-    #         if eps_key not in all_results[dataset]:
-    #             all_results[dataset][eps_key] = {"pcc": [], "acc": [], "utility_loss": []}
-    #         elif "utility_loss" not in all_results[dataset][eps_key]:
-    #             all_results[dataset][eps_key]["utility_loss"] = []
-    #         existing_runs = len(all_results[dataset][eps_key]["acc"])
-    #         for run in range(existing_runs, 5):
-    #             cmd = ["python3", "test/eval_robustness.py", "-dataset", dataset, "-eps", str(eps),
-    #                    "-n_ts", "200", "-n", "500", "-m", "100", "-c", "ecg", "-train_id", "0", "48",
-    #                    "-test_id", str(test_id[dataset][0]), str(test_id[dataset][1]), "-g_model", "WillBeNamed",
-    #                    "-mp_embedding", "-znorm", "-fill", "100", "-test", "-rob", eval_type ]
-    #             subprocess.run(cmd, check=True)
-    #             base_test_folder = os.path.join(root_path, dataset, eval_type, str(eps))
-    #             loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
-    #             accuracy = reidentification_attack(base_test_folder,
-    #                                             ipopt=False,
-    #                                             dataset=dataset,
-    #                                             category="ecg",
-    #                                             use_mp=False,
-    #                                             classifier="svm",
-    #                                             use_feature=True,
-    #                                             use_original=False,
-    #                                             distance=False)
-    #             loss_utility = compute_utility_loss_from_folder(base_test_folder, stat="mean")
-    #             all_results[dataset][eps_key]["pcc"].append(float(loss_test))
-    #             all_results[dataset][eps_key]["acc"].append(float(accuracy))
-    #             all_results[dataset][eps_key]["utility_loss"].append(float(loss_utility))
-    #             with open(results_path, "w") as f:
-    #                 json.dump(all_results, f, indent=2)
-    #             print(f"[{dataset}] eps={eps} run {run+1}/5 — pcc={loss_test:.4f} acc={accuracy:.4f} utility loss={loss_utility:.4f}")
-    #         dataset_res.append(np.mean(all_results[dataset][eps_key]["pcc"]))
-    #         reidentify.append(np.mean(all_results[dataset][eps_key]["acc"]))
-    #         utility_loss.append(np.mean(all_results[dataset][eps_key]["utility_loss"]))
-    #     pcc_list.append(dataset_res)
-    #     accuracy_list.append(reidentify)
-    #     utility_loss_list.append(utility_loss)
+            results_path = os.path.join("src/results/baseline/ptbxl", f"eval_robustness_{eval_type}_results.json")
+            os.makedirs(os.path.dirname(results_path), exist_ok=True)
+            if os.path.exists(results_path):
+                with open(results_path) as f:
+                    all_results = json.load(f)
+            else:
+                all_results = {}
 
-    # def fmt_eps(v):
-    #     exp = int(np.log10(v))
-    #     coeff = round(v / 10**exp)
-    #     return f"${coeff}\\times10^{{{exp}}}$"
+            pcc_list = []
+            pcc_std_list = []
+            accuracy_list = []
+            accuracy_std_list = []
+            utility_loss_list = []
+            utility_loss_std_list = []
+            for dataset in datasets:
+                if dataset not in all_results:
+                    all_results[dataset] = {}
+                dataset_res = []
+                dataset_res_std = []
+                reidentify = []
+                reidentify_std = []
+                utility_loss = []
+                utility_loss_std = []
+                for eps in epsilon:
+                    eps_key = str(eps)
+                    if eps_key not in all_results[dataset]:
+                        all_results[dataset][eps_key] = {"pcc": [], "acc": [], "utility_loss": []}
+                    elif "utility_loss" not in all_results[dataset][eps_key]:
+                        all_results[dataset][eps_key]["utility_loss"] = []
+                    existing_runs = len(all_results[dataset][eps_key]["acc"])
+                    for run in range(existing_runs, 5):
+                        cmd = ["python3", "test/eval_robustness.py", "-dataset", dataset, "-eps", str(eps),
+                            "-n_ts", "200", "-n", "500", "-m", "100", "-c", "ecg", "-g_model", "deepmp",
+                            "-mp_embedding", "-znorm", "-fill", "100", "-test", "-rob", eval_type ]
+                        subprocess.run(cmd, check=True)
+                        base_test_folder = os.path.join(root_path, dataset, eval_type, str(eps))
+                        loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
+                        accuracy = reidentification_attack(base_test_folder,
+                                                        ipopt=False,
+                                                        dataset=dataset,
+                                                        category="ecg",
+                                                        use_mp=False,
+                                                        classifier="svm",
+                                                        use_feature=True,
+                                                        use_original=False,
+                                                        distance=False)
+                        loss_utility = compute_utility_loss_from_folder(base_test_folder, stat="mean")
+                        all_results[dataset][eps_key]["pcc"].append(float(loss_test))
+                        all_results[dataset][eps_key]["acc"].append(float(accuracy))
+                        all_results[dataset][eps_key]["utility_loss"].append(float(loss_utility))
+                        with open(results_path, "w") as f:
+                            json.dump(all_results, f, indent=2)
+                        print(f"[{dataset}] eps={eps} run {run+1}/5 — pcc={loss_test:.4f} acc={accuracy:.4f} utility loss={loss_utility:.4f}")
+                    acc_runs = all_results[dataset][eps_key]["acc"]
+                    ul_runs  = all_results[dataset][eps_key]["utility_loss"]
+                    n_runs   = max(len(acc_runs), 1)
+                    pcc_runs = all_results[dataset][eps_key]["pcc"]
+                    dataset_res.append(np.mean(pcc_runs))
+                    dataset_res_std.append(np.std(pcc_runs) / np.sqrt(max(len(pcc_runs), 1)))
+                    reidentify.append(np.mean(acc_runs))
+                    reidentify_std.append(np.std(acc_runs) / np.sqrt(n_runs))
+                    utility_loss.append(np.mean(ul_runs))
+                    utility_loss_std.append(np.std(ul_runs) / np.sqrt(n_runs))
+                pcc_list.append(dataset_res)
+                pcc_std_list.append(dataset_res_std)
+                accuracy_list.append(reidentify)
+                accuracy_std_list.append(reidentify_std)
+                utility_loss_list.append(utility_loss)
+                utility_loss_std_list.append(utility_loss_std)
 
-    # eps_labels = [fmt_eps(e) for e in epsilon]
+            def fmt_eps(v):
+                exp = int(np.log10(v))
+                coeff = round(v / 10**exp)
+                return f"${coeff}\\times10^{{{exp}}}$"
 
-    # from matplotlib.ticker import PercentFormatter
-    # matplotlib.rcParams.update({"font.size": 13})
-    # x = np.arange(len(epsilon))
-    # colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    # os.makedirs("paper_figures", exist_ok=True)
+            eps_labels = [fmt_eps(e) for e in epsilon]
 
-    # # Plot 1: Re-identification accuracy + utility loss (right axis)
-    # fig1, ax1 = plt.subplots(figsize=(5.5, 4))
-    # ax1b = ax1.twinx()
-    # for i, (dataset, acc_vals, ul_vals) in enumerate(zip(datasets, accuracy_list, utility_loss_list)):
-    #     c = colors[i % len(colors)]
-    #     ax1.plot(x, [acc/baseline_accuracy[dataset] for acc in acc_vals], marker="o", color=c, linestyle="-", label=dataset)
-    #     ax1b.plot(x, ul_vals, marker="s", color=c, linestyle="--", alpha=0.5)
-    # ax1.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
-    # ax1.set_xticks(x)
-    # ax1.set_xticklabels(eps_labels, fontsize=10, rotation=45, ha="right")
-    # ax1.set_xlabel("Epsilon", fontsize=13)
-    # ax1.set_ylabel("RIR Gain (%)", fontsize=12)
-    # ax1b.set_ylabel("Utility Loss", fontsize=12)
-    # ax1.legend(loc="best", fontsize=10, framealpha=0.7)
-    # fig1.tight_layout()
-    # fig1.savefig(f"paper_figures/robustness_{eval_type}_reidentification.png", dpi=150, bbox_inches="tight")
-    # print(f"Saved paper_figures/robustness_{eval_type}_reidentification.png")
+            from matplotlib.ticker import PercentFormatter
+            matplotlib.rcParams.update({"font.size": 13})
+            x = np.arange(len(epsilon))
+            colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+            os.makedirs("paper_figures", exist_ok=True)
 
-    # # Plot 2: Mean PCC + utility loss (right axis)
-    # fig2, ax2 = plt.subplots(figsize=(5.5, 4))
-    # ax2b = ax2.twinx()
-    # for i, (dataset, pcc_vals, ul_vals) in enumerate(zip(datasets, pcc_list, utility_loss_list)):
-    #     c = colors[i % len(colors)]
-    #     ax2.plot(x, pcc_vals, marker="o", color=c, linestyle="-", label=dataset)
-    #     ax2b.plot(x, ul_vals, marker="s", color=c, linestyle="--", alpha=0.5)
-    # ax2.set_xticks(x)
-    # ax2.set_xticklabels(eps_labels, fontsize=10, rotation=45, ha="right")
-    # ax2.set_xlabel("Epsilon", fontsize=13)
-    # ax2.set_ylabel("Mean PCC", fontsize=13)
-    # ax2b.set_ylabel("Utility Loss", fontsize=12)
-    # ax2.legend(loc="best", fontsize=10, framealpha=0.7)
-    # fig2.tight_layout()
-    # fig2.savefig(f"paper_figures/robustness_{eval_type}_reconstruction.png", dpi=150, bbox_inches="tight")
-    # print(f"Saved paper_figures/robustness_{eval_type}_reconstruction.png")
+            # Plot 1: Re-identification accuracy + utility loss (right axis)
+            fig1, ax1 = plt.subplots(figsize=(5.5, 4))
+            ax1b = ax1.twinx()
+            for i, (dataset, acc_vals, acc_stds, ul_vals, ul_stds) in enumerate(
+                    zip(datasets, accuracy_list, accuracy_std_list, utility_loss_list, utility_loss_std_list)):
+                c = colors[i % len(colors)]
+                b = baseline_accuracy[dataset]
+                ax1.errorbar(x, [acc / b for acc in acc_vals],
+                            yerr=[s / b for s in acc_stds],
+                            marker="o", color=c, linestyle="-", label=dataset,
+                            capsize=4, capthick=1.2, elinewidth=1.2)
+                ax1b.errorbar(x, ul_vals, yerr=ul_stds,
+                            marker="s", color=c, linestyle="--", alpha=0.5,
+                            capsize=4, capthick=1.2, elinewidth=1.2)
+            ax1.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+            ax1.set_ylim(0, 1.0)
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
+            ax1.set_xlabel("Epsilon", fontsize=fs_text)
+            ax1.set_ylabel("RIR Gain (%)", fontsize=fs_text)
+            ax1b.set_ylabel("Utility Loss", fontsize=fs_text)
+            # ax1.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+            fig1.tight_layout()
+            fig1.savefig(f"paper_figures/robustness_{eval_type}_reidentification.png", dpi=150, bbox_inches="tight")
+            print(f"Saved paper_figures/robustness_{eval_type}_reidentification.png")
 
-    ## Plot the feature preservation for ECG datasets
-    # dataset_paths = {
-    #     "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
-    #     "ptbxl":      "src/results/ipopt/ptbxl/",
-    #     "ltdb": "src/results/ipopt/ltdb"
-    # }
-    dataset_paths = {
-        "tdbrain": "src/results/ipopt/eeg_ind_500/"
-    }
-    plot_feature_relative_error_boxplot(dataset_paths, category="eeg", fs=100, out="paper_figures/feature_relative_error_boxplot_eeg.png")
+            # Plot 2: Mean PCC + utility loss (right axis)
+            fig2, ax2 = plt.subplots(figsize=(5.5, 4))
+            ax2b = ax2.twinx()
+            for i, (dataset, pcc_vals, pcc_stds, ul_vals, ul_stds) in enumerate(
+                    zip(datasets, pcc_list, pcc_std_list, utility_loss_list, utility_loss_std_list)):
+                c = colors[i % len(colors)]
+                ax2.errorbar(x, pcc_vals, yerr=pcc_stds,
+                            marker="o", color=c, linestyle="-", label=dataset,
+                            capsize=4, capthick=1.2, elinewidth=1.2)
+                ax2b.errorbar(x, ul_vals, yerr=ul_stds,
+                            marker="s", color=c, linestyle="--", alpha=0.5,
+                            capsize=4, capthick=1.2, elinewidth=1.2)
+            ax2.set_ylim(0, 0.6)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
+            ax2.set_xlabel("Epsilon", fontsize=fs_text)
+            ax2.set_ylabel("Mean PCC", fontsize=fs_text)
+            ax2b.set_ylabel("Utility Loss", fontsize=fs_text)
+            # ax2.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+            fig2.tight_layout()
+            fig2.savefig(f"paper_figures/robustness_{eval_type}_reconstruction.png", dpi=150, bbox_inches="tight")
+            print(f"Saved paper_figures/robustness_{eval_type}_reconstruction.png")
+    if args.exp_name == "features":
+        ## Plot the feature preservation for ECG datasets
+        if args.category == "ecg":
+            dataset_paths = {
+                "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
+                "ptbxl":      "src/results/ipopt/ptbxl/",
+                "ltdb": "src/results/ipopt/ltdb"
+            }
+            fs = 100
+        else:
+            dataset_paths = {
+                "tdbrain": "src/results/ipopt/eeg_ind_500/"
+            }
+            fs = 500
+        plot_feature_relative_error_boxplot(dataset_paths, category=args.category, fs=fs, out=f"paper_figures/feature_relative_error_boxplot_{args.category}.png")

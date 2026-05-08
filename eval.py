@@ -13,6 +13,9 @@ import pandas as pd
 from features_extraction import extract_ecg_features, extract_eeg_features
 from sklearn.preprocessing import StandardScaler
 from src.utils import pearson_correlation, normalize, rmse_inv_check, partial_rmse, partial_pearson_correlation, detection_peak, cardiac_frequency, delta_loss, alpha_loss, entropy_loss, kurtosis_loss
+import argparse
+from reidentify import reidentification_attack
+
 def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, stat="mean", dataset = "ecg", ipopt=False):
     mse_list = []
     for folder in os.listdir(base_folder):
@@ -386,7 +389,7 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
     # For each reconstructed ts, rank candidates by distance to reference subsequences
     rank = []
     for id_ts, ts_test in enumerate(ts_inverse):
-        if dataset == "arrhythmia_xl":
+        if dataset == "arrhythmia":
             id_label = int(id_ts / 5) 
         elif dataset == "ltdb":
             id_label = int(id_ts/30)
@@ -429,66 +432,51 @@ def plot_test_points_distribution(ref_attacker, feature_keys=None, save_path="te
 
 
 if __name__ == "__main__":
-    # for id_person in range(1,2):
-    #     rank_0 = conformal_prediction(500, 100, f"src/results/baseline/n500m100/person{id_person}", 20000, [id_person])
-    #     np.save(f"outputs/n200m10/disable_validation/rank_{id_person}.npy", rank_0)
-    #     plot_rank_distribution(rank_0, f"outputs/n200m10/disable_validation/conformal_{id_person}.png", title=f"Rank Distribution for person {id_person}")
-   
     # DeepMP
-    # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/test/results/ecg_arrhythmia_xl/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/ptbxl/ptbxl/"
-    # base_test_folder = "test/results/ecg_ltdb_100"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/baseline/eeg/tdbrain"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--category", type=str, default="ecg", help="Dataset category")
+    parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset", choices=["arrhythmia", "ptbxl", "ltdb", "tdbrain"])
+    parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
 
-    # DeepMP + IPOPT
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/arrhythmia/"
-    # base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/ptbxl/"
-    # base_test_folder = "src/results/ipopt/arrhythmia_xl"
-    # base_test_folder = "src/results/ipopt/ltdb"
-    base_test_folder = "/home/haoying/Documents/MPGAN/src/results/ipopt/eeg"
+    args = parser.parse_args()
+    dataset = args.dataset
 
-    loss_test = compute_loss_from_folder(base_test_folder, entropy_loss, epsilon=None, stat="mean", dataset="eeg", ipopt=True)
-    print(f"Peaks preservation : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, cardiac_frequency, epsilon=None, stat="mean", dataset="ecg", ipopt=False)
-    # print(f"BPM preservation : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
-    # print(f"PCC mean : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
-    # print(f"PCC 0.7 : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
-    # print(f"PCC max : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
-    # print(f"Partial PCC 0.7 : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
-    # print(f"RMSE : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
-    # print(f"RMSE 0.1 : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
-    # print(f"RMSE min : {loss_test}")
-    # loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
-    # print(f"Partial RMSE 0.1 : {loss_test}")
-
-    # similar_folders = parse_similar_mp_folders(base_test_folder, m=100)
-    # print(similar_folders)
+    if not args.ipopt:
+        if dataset == "arrhythmia":
+            base_test_folder = "test/results/ecg_arrhythmia/"
+        elif dataset == "ptbxl":
+            base_test_folder = "src/results/baseline/ptbxl/ptbxl/"
+        elif dataset == "ltdb":
+            base_test_folder = "test/results/baseline/ptbxl/ltdb/"
+        elif dataset == "tbbrain":
+            base_test_folder = "src/results/baseline/eeg/tdbrain/"
+        else:
+            raise ValueError(f"Unknown dataset {args.dataset}")
+    else:
+        if dataset == "arrhythmia":
+            base_test_folder = "src/results/ipopt/arrhythmia/"
+        elif dataset == "ptbxl":
+            base_test_folder = "src/results/ipopt/ptbxl/"
+        elif dataset == "ltdb":
+            base_test_folder = "src/results/ipopt/ltdb/"
+        elif dataset == "tdbrain":
+            base_test_folder = "src/results/ipopt/eeg/tdbrain/"
+        else:
+            raise ValueError(f"Unknown dataset {args.dataset}")
     
-
-    # for id_p in range(1):
-        # print(f"person{id_p}")
-        # base_test_folder = f"src/results/baseline/n200m10/disable_validation/person{id_p}"
-        # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
-        # print(f"PCC mean : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
-        # print(f"PCC 0.7 : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
-        # print(f"PCC max : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
-        # print(f"Partial PCC 0.7 : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
-        # print(f"RMSE : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
-        # print(f"RMSE 0.1 : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
-        # print(f"RMSE min : {loss_test}")
-        # loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
-        # print(f"Partial RMSE 0.1 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
+    print(f"PCC mean : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    print(f"PCC 0.7 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max")
+    print(f"PCC max : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean")
+    print(f"Partial PCC 0.7 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean")
+    print(f"RMSE : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean")
+    print(f"RMSE 0.1 : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min")
+    print(f"RMSE min : {loss_test}")
+    loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean")
+    print(f"Partial RMSE 0.1 : {loss_test}")

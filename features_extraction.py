@@ -502,37 +502,6 @@ def extract_ecg_features(ts, fs=150):
     """
     Morphology-focused ECG features for person re-identification.
 
-    Improvements over the original
-    --------------------------------
-    - Beat template extracted from valid R-peaks (edge beats rejected)
-    - Fiducial amplitudes & ratios  : r_amplitude, t_amplitude, s_amplitude,
-                                      rt_ratio, rs_ratio  (normalise out session
-                                      amplitude drift)
-    - QRS geometry                  : qrs_width_ms, qrs_area, st_level
-    - T-wave energy                 : t_area
-    - Template shape (cosine basis) : cosine_1 … cosine_8  (encode morphology
-                                      without needing PCA across subjects)
-    - Morphology consistency        : beat-to-template correlation (intra-session
-                                      stability check)
-    - Sub-band PSD ratios           : pow_0_5, pow_0p5_5, pow_5_15, pow_15_40,
-                                      pow_40p, qrs_band_ratio
-                                      (QRS band 5–15 Hz is most discriminative)
-
-    Kept from original (stable enough or useful as secondary cues)
-    --------------------------------------------------------------
-    - kurtosis, skewness, std       : retained but de-weighted in SVM
-    - spectral_entropy              : kept
-    - autocorr_peak_lag/val         : kept, now computed on edge-cleaned signal
-    - sample_entropy                : kept
-
-    Removed
-    -------
-    - dominant_freq   : varies ±0.5 Hz intra-person across sessions (HR drift)
-    - psd_ratio       : replaced by finer sub-band ratios
-    - rr_regulation   : only 3–4 intervals on a 3 s window → too noisy
-    - subsequence_entropy, pattern_entropy : external deps (ts_entropy); fragile
-                                             on short windows
-
     Parameters
     ----------
     ts : array-like   1-D ECG time series
@@ -560,6 +529,7 @@ def extract_ecg_features(ts, fs=150):
     pre_r  = int(0.20 * fs)   # 200 ms before R
     post_r = int(0.40 * fs)   # 400 ms after  R
     beat_len = pre_r + post_r
+    beat_arrhythmia = 0
 
     # Ignore the first or the last false peak detected
     valid_peaks = all_peaks[
@@ -567,6 +537,7 @@ def extract_ecg_features(ts, fs=150):
     ]
     if len(valid_peaks)>1:
         beat_len = np.mean([valid_peaks[i+1]-valid_peaks[i] for i in range(len(valid_peaks)-1)])
+        beat_arrhythmia = np.max([valid_peaks[i+1]-valid_peaks[i] for i in range(len(valid_peaks)-1)]) - np.min([valid_peaks[i+1]-valid_peaks[i] for i in range(len(valid_peaks)-1)])
         pre_r = int(0.2 * beat_len)
         post_r = int(0.4 * beat_len)
         valid_peaks = valid_peaks[
@@ -761,6 +732,7 @@ def extract_ecg_features(ts, fs=150):
         'std':                  std_val,
         'sample_entropy':       samp_ent,
         'bpm':                  beat_len,
+        "arrhythmia":           beat_arrhythmia,
         # --- original frequency-domain (refined) ---
         'spectral_entropy':     spectral_ent,
         'dominant_frequency':   dominant_freq,

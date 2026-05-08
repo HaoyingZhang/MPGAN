@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.base import BaseEstimator, ClassifierMixin
 import joblib
 from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader
-
+import argparse
 ## GLOBAL VARIABLES
 
 DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
@@ -502,7 +502,7 @@ def reidentification_attack(base_root, n = 500,
                             resample_hz=None, plot=False, 
                             robust_features=False, n_features=None):
     print(f"Evaluating database {dataset} under base root {base_root}")
-    
+
     REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
 
     frequency = SOURCE_HZ[dataset] if resample_hz is None else resample_hz
@@ -588,15 +588,15 @@ def reidentification_attack(base_root, n = 500,
         if classifier == "knn":
             clf = KNeighborsClassifier(n_neighbors=31, metric="minkowski", weights="distance")
         elif classifier == "svm":
-            clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+            clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True, random_state=42)
         elif classifier == "rf":
-            clf = RandomForestClassifier(max_features="log2", max_depth=10, min_samples_leaf=5, n_estimators=300)
+            clf = RandomForestClassifier(max_features="log2", max_depth=10, min_samples_leaf=5, n_estimators=300, random_state=42)
         elif classifier == "cnn":
             clf = TimeSeriesCNNClassifier()
         elif classifier == "transformer":
             clf = TimeSeriesTransformerClassifier()
         elif classifier == "xgb":
-            clf = XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=4, min_child_weight=5, subsample=0.8, eval_metric="mlogloss", verbosity=0)
+            clf = XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=4, min_child_weight=5, subsample=0.8, eval_metric="mlogloss", verbosity=0, random_state=42, seed=42)
 
         train_fs = 500 if category == "eeg" else 100
         
@@ -740,7 +740,7 @@ def reidentification_attack(base_root, n = 500,
                     dist_feature.append(dist)
                 print(f"{feature_name}: {np.mean(dist_feature)}")
 
-        test_labels = np.array(test_labels, dtype=np.int64)
+        test_labels = np.array(labels, dtype=np.int64)
 
         def _rank(sorted_cands, true_label):
             return next((r for r, (cid, _) in enumerate(sorted_cands) if cid == true_label), len(sorted_cands))
@@ -756,7 +756,6 @@ def reidentification_attack(base_root, n = 500,
             print("Unknown metric function name, using euclidean")
             metric_func = euclidean
         for ts_vec, ts_vec_neg, true_lbl in zip(test_vecs, test_vecs_neg, test_labels):
-            print(true_lbl)
             row_pos, row_neg = [], []
             for candidate_refs in ref_for_dist:
                 if metric_func.__name__ == "pearson_correlation":
@@ -771,8 +770,8 @@ def reidentification_attack(base_root, n = 500,
             else:
                 sc_pos = sorted(enumerate(row_pos), key=lambda x: x[1])
                 sc_neg = sorted(enumerate(row_neg), key=lambda x: x[1])
-            ranks_d.append(min(_rank(sc_pos, true_lbl), _rank(sc_neg, true_lbl)))
-            print(min(_rank(sc_pos, true_lbl), _rank(sc_neg, true_lbl)))
+            # ranks_d.append(min(_rank(sc_pos, true_lbl), _rank(sc_neg, true_lbl)))
+            ranks_d.append(_rank(sc_pos, true_lbl))
 
         ranks_d   = np.array(ranks_d, dtype=np.int64)
         hit_mask_d = ranks_d == 0
@@ -796,7 +795,6 @@ def reidentification_attack(base_root, n = 500,
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true",
                         help="Print per-test-patient attribution breakdown")
