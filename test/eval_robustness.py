@@ -21,9 +21,9 @@ from src.utils_matrix_profile import MP_compute_recursive
 from main import normalize, plot_res, save_args
 from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader
 
-DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
-LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia_xl": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
-SOURCE_HZ = {"ptbxl": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500}
+DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia": arrhythmia_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
+LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia": np.arange(48), "arrhythmia_xl": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
+SOURCE_HZ = {"ptbxl": 100, "arrhythmia": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500}
 SESSION_EEG = "EC"
 
 
@@ -46,8 +46,8 @@ if __name__ == "__main__":
     parser.add_argument("-fill", "--fill_value", type=float, default = 100.0, help="The value to fill in the MP embedding")
     parser.add_argument("-dataset", type=str, default = "ltdb", help="The ECG dataset used")
     parser.add_argument("-resample_hz", type=int, default=None, metavar="HZ",help="Resample signals to this rate (Hz) before processing")
-    parser.add_argument("-rob", type=str, default="mpi", help="The perturbation list")
-    parser.add_argument("-eps", type=float, default=100.0, help="The global epsilon (privacy budget)")
+    parser.add_argument("--rob", type=str, default="mpi", help="The perturbation list")
+    parser.add_argument("--eps", type=float, default=100.0, help="The global epsilon (privacy budget)")
     
     args = parser.parse_args()
 
@@ -113,23 +113,23 @@ if __name__ == "__main__":
     # 4. Generate samples
     G.eval()
 
-    if args.dataset == "arrhythmia":
+    if args.dataset in ("arrhythmia", "arrhythmia_xl"):
         indices_ts = [0,500,1000,2000,2500]
     elif args.dataset in ("ptbxl", "t-drive"):
         indices_ts = [500]
+    else:
+        indices_ts = [0]
     
     print(f"Indices : {indices_ts}")
 
     X_test_full, y_test_full = [], []
     for ts in all_ts:
         for start_idx in indices_ts:
-            ts = ts[start_idx : start_idx + args.n]
-            if len(ts) < args.n:
-                print(f"The trancation at index {start_idx} is ignored due to the limitation size in time series")
+            segment = ts[start_idx : start_idx + args.n]
+            if len(segment) < args.n:
+                print(f"The truncation at index {start_idx} is ignored due to the limitation size in time series")
                 continue
-
-            ts = normalize(ts)
-            y_test_full.append(ts)
+            y_test_full.append(normalize(segment))
     print(f"Loading {len(y_test_full)} time series")
 
     _results = [

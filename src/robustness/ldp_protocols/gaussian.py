@@ -12,6 +12,7 @@ class GaussianMechanism:
         epsilon : float
             The privacy budget. Must be positive.
         """
+        self.delta = 1e-5
         if sensitivity <= 0:
             raise ValueError("sensitivity must be a positive value.")
         if epsilon <= 0:
@@ -19,7 +20,7 @@ class GaussianMechanism:
 
         self.sensitivity = sensitivity
         self.epsilon = epsilon
-        self.scale = sensitivity / epsilon
+        self.scale = sensitivity * np.sqrt(2 * np.log(1.25 / self.delta)) / epsilon
 
     def obfuscate(self, input_data: float) -> float:
         return float(input_data) + np.random.normal(0.0, self.scale)
