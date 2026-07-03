@@ -117,13 +117,14 @@ def rmse(list_1, list_2):
     return np.sqrt(np.mean((list_1  - list_2) ** 2))
 
 def mpi_distance(mpi_orig, mpi_pert):
-    n = len(mpi_orig)
-    positions = np.arange(n)
+    # n = len(mpi_orig)
+    # positions = np.arange(n)
 
-    orig_weights = np.bincount(mpi_orig, minlength=n) / n
-    pert_weights = np.bincount(mpi_pert, minlength=n) / n
+    # orig_weights = np.bincount(mpi_orig, minlength=n) / n
+    # pert_weights = np.bincount(mpi_pert, minlength=n) / n
 
-    emd = wasserstein_distance(positions, positions, orig_weights, pert_weights)
+    # emd = wasserstein_distance(positions, positions, orig_weights, pert_weights)
+    emd = rmse(mpi_orig, mpi_pert)
     return emd
 
 def mpd_distance(mpd_orig, mpd_pert):

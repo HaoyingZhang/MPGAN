@@ -8,6 +8,7 @@ import sys, os, argparse, glob, json
 os.environ["NUMBA_DISABLE_CUDA"] = "1"
 import stumpy
 from scipy import stats
+from scipy.signal import resample as scipy_resample
 from dataloader import MemmapDataset
 import wfdb
 from concurrent.futures import ProcessPoolExecutor
@@ -27,6 +28,8 @@ from models.CNN import Generator as G_CNN
 from models.WillBeNamed import Generator as DeepMP
 from training.train_baseline import train_inverse
 from src.utils_matrix_profile import MP_compute_single, build_mp_embedding_batch
+
+EEG_ORIGINAL_FREQUENCY = 500  # Hz, native sampling rate of TDBRAIN EEG recordings
 
 def normalize(time_series : np.ndarray) -> np.ndarray:
     rng = time_series.max() - time_series.min()
@@ -155,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("-fill", "--fill_value", type=float, default = 100.0, help="The value to fill in the MP embedding")
     parser.add_argument("-val", "--enable_validation", action="store_true", help="Use validation set in training")
     parser.add_argument("-n_val", type=int, default=1000, help="Number of validation time series (non-overlapping, starting at signal position 20000)")
+    parser.add_argument("-freq", "--frequency", type=int, default=None, help="Target sampling frequency for EEG data; downsamples if lower than EEG_ORIGINAL_FREQUENCY (500 Hz)")
 
     args = parser.parse_args()
 
@@ -259,6 +263,9 @@ if __name__ == "__main__":
                 vhdr_path = os.path.join(data_train_dir, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr")
                 raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose=False)
                 signal = raw.get_data(picks=0)[0].astype(np.float32)
+                if args.frequency is not None and args.frequency < EEG_ORIGINAL_FREQUENCY:
+                    n_samples_new = int(len(signal) * args.frequency / EEG_ORIGINAL_FREQUENCY)
+                    signal = scipy_resample(signal, n_samples_new).astype(np.float32)
             else:
                 record = wfdb.rdrecord(os.path.join(data_train_dir, file))
                 signal = record.p_signal[:, 0].astype(np.float32, copy=False)
@@ -353,6 +360,9 @@ if __name__ == "__main__":
                     matches = glob.glob(os.path.join(data_test_dir, file, "ses-1", "eeg", "*restEC*.vhdr"))
                     raw = mne.io.read_raw_brainvision(matches[0], preload=True, verbose=False)
                     signal = raw.get_data(picks=0)[0].astype(np.float32)
+                    if args.frequency is not None and args.frequency < EEG_ORIGINAL_FREQUENCY:
+                        n_samples_new = int(len(signal) * args.frequency / EEG_ORIGINAL_FREQUENCY)
+                        signal = scipy_resample(signal, n_samples_new).astype(np.float32)
                 else:
                     record = wfdb.rdrecord(os.path.join(data_test_dir, file))
                     signal = record.p_signal[:, 0].astype(np.float32, copy=False)

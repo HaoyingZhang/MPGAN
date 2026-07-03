@@ -751,7 +751,7 @@ def extract_ecg_features(ts, fs=150):
         # 'rt_ratio':             rt_ratio,
         # 'rs_ratio':             rs_ratio,
         # # --- new: QRS geometry ---
-        'qrs_width_ms':         qrs_width_ms,
+        # 'qrs_width_ms':         qrs_width_ms,
         'qrs_area':             qrs_area,
         # 'st_level':             st_level,
         # # --- new: T-wave ---

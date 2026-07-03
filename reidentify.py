@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import resample_poly
 from scipy.stats import gaussian_kde
 from dtaidistance.dtw import distance as dtw_distance
-from scipy.spatial.distance import euclidean
+from scipy.spatial.distance import euclidean, cdist
 import wfdb
 from src.utils_matrix_profile import normalize
 
@@ -33,11 +33,12 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 import joblib
 from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader
 import argparse
+from numpy.lib.stride_tricks import sliding_window_view
 ## GLOBAL VARIABLES
 
-DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
-LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia_xl": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
-SOURCE_HZ = {"ptbxl": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500}
+DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader,"arrhythmia": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
+LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia_xl": np.arange(48), "arrhythmia": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
+SOURCE_HZ = {"ptbxl": 100, "arrhythmia_xl": 100, "arrhythmia": 100, "ltdb": 100, "tdbrain": 500}
 SESSION_EEG = "EC"
 
 class _TransformerNet(nn.Module):
@@ -522,7 +523,7 @@ def reidentification_attack(base_root, n = 500,
             ts = normalize(long_ts_person[ind:ind+n])
             if use_mp:
                 mp = stumpy.stump(ts, m=100)
-                ts = np.concatenate([mp[:, 0], mp[:, 1]])
+                ts = mp[:, 0]
             ref_ts_person.append(ts)
         ref_attacker.append(ref_ts_person)
         ids.append(idx)
@@ -534,12 +535,17 @@ def reidentification_attack(base_root, n = 500,
 
     if use_original:
         for label_test in ids:
-            ts = np.array(all_ts[label_test][500:500+n], dtype=np.float64)
-            if use_mp:
-                mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
-                ts = np.concatenate([mp[:, 0], mp[:, 1]])
-            ts = normalize(ts)
-            ts_raw_test.append(ts)
+            if dataset in ["arrhythmia","arrhythmia_xl"]:
+                indices = [500, 1000, 1500, 2000, 2500]
+            else:
+                indices = [500]
+            for ind in indices:
+                ts = np.array(all_ts[label_test][ind:ind+n], dtype=np.float64)
+                if use_mp:
+                    mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
+                    ts = mp[:, 0]
+                ts = normalize(ts)
+                ts_raw_test.append(ts)
     else:
         test_dirs = sorted(
             [os.path.join(base_root, d) for d in os.listdir(base_root)
@@ -547,6 +553,7 @@ def reidentification_attack(base_root, n = 500,
             key=lambda x: int(os.path.basename(x).split("_")[1]),
         )
         ids = np.arange(len(test_dirs))
+        print(f"{ids} time series detected")
     
         for ecg_dir in test_dirs:
             json_path = os.path.join(ecg_dir, "results.json")
@@ -567,17 +574,17 @@ def reidentification_attack(base_root, n = 500,
             ts = normalize(ts)
             if use_mp:
                 mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
-                ts = np.concatenate([mp[:, 0], mp[:, 1]])
+                ts = mp[:, 0]
             ts_raw_test.append(ts)
         
 
     # Assign ground-truth label
     if dataset in ("arrhythmia_xl", "arrhythmia"):
-        labels = [int(id/5) for id in ids]
+        labels = [int(id/5) for id in range(len(ts_raw_test))]
     elif dataset in ("ptbxl", "tdbrain"):
         labels = ids  
     elif dataset == "ltdb":
-        labels = [int(id/20) for id in ids]
+        labels = [int(id/20) for id in range(len(ts_raw_test))]
     
     # Training the classifier
     accuracy = 0
@@ -751,7 +758,7 @@ def reidentification_attack(base_root, n = 500,
         elif metric == "euclidean":
             metric_func = euclidean
         elif metric == "dtw":
-            metric_func = dtw_distance
+            metric_func = lambda a, b: dtw_distance(a, b, window=30)
         else:
             print("Unknown metric function name, using euclidean")
             metric_func = euclidean
@@ -792,6 +799,178 @@ def reidentification_attack(base_root, n = 500,
                     print(f"#{i} (class {ptb_id:3d})  → rank {ranks_d[i]}  {hit}")
         accuracy = accuracy_d
     return accuracy
+
+def reidentification_attack_pets(base_root, n=500,
+                                  ipopt=False, dataset="ptbxl",
+                                  category="ecg", use_mp=False,
+                                  classifier="svm", use_feature=True,
+                                  use_original=False, distance=False,
+                                  metric="dtw", verbose=True,
+                                  resample_hz=None, plot=False,
+                                  robust_features=False, n_features=None):
+    print(f"Evaluating database {dataset} under base root {base_root} (PETS window method)")
+
+    REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
+
+    frequency = SOURCE_HZ[dataset] if resample_hz is None else resample_hz
+    if dataset == "tdbrain":
+        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency, session=SESSION_EEG)
+    else:
+        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency)
+
+    ref_attacker = []
+    ids = []
+
+    for idx, long_ts_person in enumerate(all_ts):
+        ref_ts_person = []
+        for ind in REFERENCE_INDICES:
+            ts = normalize(long_ts_person[ind:ind+n])
+            if use_mp:
+                mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
+                ts = mp[:, 0]
+            ref_ts_person.append(ts)
+        ref_attacker.append(ref_ts_person)
+        ids.append(idx)
+
+    print(f"{len(ref_attacker)} People loaded in the training set")
+
+    ts_raw_test = []
+
+    if use_original:
+        for label_test in ids:
+            ts = normalize(np.array(all_ts[label_test][500:500+n], dtype=np.float64))
+            if use_mp:
+                mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
+                ts = mp[:, 0]
+            ts_raw_test.append(ts)
+    else:
+        test_dirs = sorted(
+            [os.path.join(base_root, d) for d in os.listdir(base_root)
+             if d.startswith(f"{category}_") and d.split("_")[1].isdigit()],
+            key=lambda x: int(os.path.basename(x).split("_")[1]),
+        )
+        ids = np.arange(len(test_dirs))
+
+        for ecg_dir in test_dirs:
+            json_path = os.path.join(ecg_dir, "results.json")
+            if not os.path.exists(json_path):
+                print(f"FATAL: {ecg_dir} not found !")
+                return
+            with open(json_path) as f:
+                data = json.load(f)
+            if ipopt:
+                ts = np.array(data["smoothed"] if dataset == "tdbrain" else data["solutions"][0], dtype=np.float64)
+            else:
+                ts = np.array(data["fake_data"], dtype=np.float64)
+            ts_raw_test.append(normalize(ts))
+
+    if dataset in ("arrhythmia_xl", "arrhythmia"):
+        labels = [int(id/5) for id in ids]
+    elif dataset in ("ptbxl", "tdbrain"):
+        labels = list(ids)
+    elif dataset == "ltdb":
+        labels = [int(id/20) for id in ids]
+
+    test_labels = np.array(labels, dtype=np.int64)
+
+    # Flatten reference segments into a single list with corresponding person IDs
+    flat_ref_list = [seg for person_segs in ref_attacker for seg in person_segs]
+    flat_ref_ids  = [person_idx for person_idx, person_segs in enumerate(ref_attacker) for _ in person_segs]
+
+    correct = 0
+    hit_mask = []
+    all_predictions = []
+    for ts_test, true_lbl in zip(ts_raw_test, test_labels):
+        predicted = find_1nn_window(
+            [ts_test], flat_ref_list, flat_ref_ids,
+            k=1, metric_function=euclidean, win_len=100, objective_func=minimum_vote,
+        )
+        hit = int(true_lbl) in predicted
+        hit_mask.append(hit)
+        all_predictions.append(predicted)
+        if hit:
+            correct += 1
+
+    hit_mask = np.array(hit_mask)
+    accuracy = correct / len(ts_raw_test)
+    print(f"True  : {correct}")
+    print(f"False : {len(ts_raw_test) - correct}")
+    print(f"Accuracy : {accuracy:.4f}")
+
+    if verbose:
+        print("\n--- Per-test-patient (PETS window) attribution ---")
+        for i, ptb_id in enumerate(test_labels):
+            if hit_mask[i]:
+                print(f"#{i} (class {ptb_id:3d})  → predicted {all_predictions[i]}  ✓")
+
+    return accuracy
+
+
+def majority_vote(ids_to_return, ids_in_the_list):
+    indexed_ids_in_the_list = list(enumerate(ids_in_the_list))
+    sorted_indexed_ids_in_the_list = sorted(indexed_ids_in_the_list, key=lambda x:x[1], reverse=False)
+    count = 1
+    max_count = 1
+    value_id = sorted_indexed_ids_in_the_list[0][1]
+    max_id = 0
+    for i in range(1, len(sorted_indexed_ids_in_the_list)):
+        if sorted_indexed_ids_in_the_list[i][1] != value_id:
+            count=1
+            value_id = sorted_indexed_ids_in_the_list[i][1]
+        else:
+            count+=1
+            if count>max_count:
+                max_count=count
+                max_id = i
+    return ids_to_return[max_id]
+
+def minimum_vote(ids_to_return, values_to_compare, reverse):
+    indexed_values_to_compare = list(enumerate(values_to_compare))
+    sorted_indexed_values_to_compare = sorted(indexed_values_to_compare, key=lambda x:x[1], reverse=reverse)
+    id_min = [sorted_indexed_values_to_compare[0][0]]
+    min_value = sorted_indexed_values_to_compare[0][1]
+    for i in range(1,len(sorted_indexed_values_to_compare)):
+        if sorted_indexed_values_to_compare[i][1]==min_value:
+            id_min.append(sorted_indexed_values_to_compare[i][0])
+    return [ids_to_return[id] for id in id_min]
+
+
+def find_1nn_window(time_series_ref_list, aggregated_list, id_patient_list_in_aggregated, k=1, metric_function=euclidean, win_len=100, objective_func=minimum_vote):
+    reverse = False
+    if metric_function.__name__ == "pearson_correlation":
+        reverse = True
+    ids = []
+    pcs_bis = []
+    for time_series_ref in time_series_ref_list:
+        patterns_ref = sliding_window_view(time_series_ref, win_len)
+        pcs=[]
+        for ecg_candidate in aggregated_list:
+            patterns_candidate = sliding_window_view(ecg_candidate, win_len)
+            dist_matrix = cdist(patterns_candidate, patterns_ref, metric=metric_function)
+            if reverse:
+                val_candidate = np.round(dist_matrix.max(), 2)
+            else:
+                val_candidate = np.round(dist_matrix.min(), 2)
+            pcs.append(val_candidate)
+        indexed_pcs = list(enumerate(pcs))
+        sorted_indexed_pcs = sorted(indexed_pcs, key=lambda x:x[1],reverse=reverse)
+        top_k_dist = [x[1] for x in sorted_indexed_pcs[:k]]
+        ids.append(sorted_indexed_pcs[0][0])
+        pcs_bis.append(sorted_indexed_pcs[0][1])
+
+        for ind in range(1,len(sorted_indexed_pcs)):
+            if sorted_indexed_pcs[ind][1]==top_k_dist[-1]:
+                ids.append(sorted_indexed_pcs[ind][0])
+                pcs_bis.append(sorted_indexed_pcs[ind][1])
+            else:
+                break
+    # print(f"metadata: dist values: {pcs_bis}, ids_mp: {ids}, ids_patients: {[id_patient_list_in_aggregated[int(i)] for i in ids]}")
+    if objective_func.__name__ == "majority_vote":
+        return majority_vote([id_patient_list_in_aggregated[int(i)] for i in ids],ids)
+    else:
+        id_to_return = minimum_vote([id_patient_list_in_aggregated[int(i)] for i in ids], pcs_bis, reverse)
+        # print(f"id to return : {id_to_return}")
+        return id_to_return
 
 
 if __name__ == "__main__":
@@ -849,6 +1028,7 @@ if __name__ == "__main__":
     #     base_root = os.path.join("data", "TDBRAIN-dataset")
 
     acc = reidentification_attack(base_root, 500, args.ipopt, args.dataset, args.category, args.mp, args.classifier, args.feature, args.original, args.distance, args.metric, args.verbose, resample_hz=args.resample, plot=args.plot, robust_features=args.robust, n_features=args.n_features)
+    # acc = reidentification_attack_pets(base_root, 500, args.ipopt, args.dataset, args.category, args.mp, args.classifier, args.feature, args.original, args.distance, args.metric, args.verbose, resample_hz=args.resample, plot=args.plot, robust_features=args.robust, n_features=args.n_features)
     print(acc)
 
     # ------------------------------------------------------------------ #
