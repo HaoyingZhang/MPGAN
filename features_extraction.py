@@ -5,7 +5,7 @@ import numpy as np
 from scipy import stats
 from dtaidistance import dtw
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
-from ecgdetectors import Detectors
+# from ecgdetectors import Detectors
 import pandas as pd
 from scipy.stats import kurtosis, skew, entropy as scipy_entropy
 from scipy import stats
@@ -126,46 +126,46 @@ def zdtw(a, b):
 #         'n_clusters':         float(k),
 #     }
 
-def rr_regularity_score(ts, fs=150, min_gap=100):
-    """
-    Score based on the regularity of RR intervals detected by Pan-Tompkins.
+# def rr_regularity_score(ts, fs=150, min_gap=100):
+#     """
+#     Score based on the regularity of RR intervals detected by Pan-Tompkins.
 
-    Steps:
-      1. Detect R peaks with Pan-Tompkins.
-      2. Compute RR intervals (consecutive peak differences in samples).
-      3. Keep only intervals >= min_gap samples.
-      4. Score = 1 - CV  (coefficient of variation), clipped to [0, 1].
-         A perfectly regular rhythm → CV=0 → score=1.
-         High variability or too few valid peaks → score=0.
+#     Steps:
+#       1. Detect R peaks with Pan-Tompkins.
+#       2. Compute RR intervals (consecutive peak differences in samples).
+#       3. Keep only intervals >= min_gap samples.
+#       4. Score = 1 - CV  (coefficient of variation), clipped to [0, 1].
+#          A perfectly regular rhythm → CV=0 → score=1.
+#          High variability or too few valid peaks → score=0.
 
-    Parameters
-    ----------
-    ts      : 1-D array-like ECG signal
-    fs      : sampling frequency in Hz (default 150)
-    min_gap : minimum RR interval in samples to retain (default 100)
+#     Parameters
+#     ----------
+#     ts      : 1-D array-like ECG signal
+#     fs      : sampling frequency in Hz (default 150)
+#     min_gap : minimum RR interval in samples to retain (default 100)
 
-    Returns
-    -------
-    float in [0, 1]  (higher = more regular RR distribution)
-    """
-    ts = np.asarray(ts, dtype=np.float64)
-    try:
-        detectors = Detectors(fs)
-        r_peaks = np.array(detectors.pan_tompkins_detector(ts), dtype=int)
-    except Exception:
-        return 0.0
+#     Returns
+#     -------
+#     float in [0, 1]  (higher = more regular RR distribution)
+#     """
+#     ts = np.asarray(ts, dtype=np.float64)
+#     try:
+#         detectors = Detectors(fs)
+#         r_peaks = np.array(detectors.pan_tompkins_detector(ts), dtype=int)
+#     except Exception:
+#         return 0.0
 
-    if len(r_peaks) < 2:
-        return 0.0
+#     if len(r_peaks) < 2:
+#         return 0.0
 
-    rr = np.diff(r_peaks)
-    rr = rr[rr >= min_gap]
+#     rr = np.diff(r_peaks)
+#     rr = rr[rr >= min_gap]
 
-    if len(rr) < 2:
-        return 0.0
+#     if len(rr) < 2:
+#         return 0.0
 
-    cv = rr.std() / (rr.mean() + 1e-8)
-    return float(np.clip(1.0 - cv, 0.0, 1.0))
+#     cv = rr.std() / (rr.mean() + 1e-8)
+#     return float(np.clip(1.0 - cv, 0.0, 1.0))
 
 def ts_to_tsfresh_df(ts, ts_id=0):
     return pd.DataFrame({

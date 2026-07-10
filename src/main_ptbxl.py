@@ -176,7 +176,7 @@ if __name__ == "__main__":
     if args.dataset == "ptbxl":
         max_train_index = 1000
     elif args.dataset == "tdbrain":
-        max_train_index = 60000  # ~5 min at 250 Hz
+        max_train_index = 60000 if args.frequency is None else int(60000*args.frequency/EEG_ORIGINAL_FREQUENCY)  # ~5 min at 250 Hz
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
@@ -285,7 +285,7 @@ if __name__ == "__main__":
                 mpd_only=args.enable_mpd_only,
                 znorm=args.znorm_mp,
                 fill_value=args.fill_value
-            )
+            )[0]
             for i in range(len(y_train))
         ])
 
@@ -329,8 +329,10 @@ if __name__ == "__main__":
             if n_val_per_person == 0:
                 raise ValueError(f"n_val={args.n_val} too small for {n_person_val} test persons")
             if n_val_per_person > len(val_candidates):
-                raise ValueError(f"Not enough non-overlapping positions in [0, {max_train_index}) for {n_val_per_person} samples/person")
-            indices_val = rng.choice(val_candidates, size=n_val_per_person, replace=False)
+                print("Not enough room for spaced val sampling, overlapped time series will be used")
+                indices_val = np.random.randint(0, max_train_index - n + 1, size=n_val_per_person)
+            else:
+                indices_val = rng.choice(val_candidates, size=n_val_per_person, replace=False)
         else:
             indices_val = val_candidates
 
@@ -382,7 +384,7 @@ if __name__ == "__main__":
                     mpd_only=args.enable_mpd_only,
                     znorm=args.znorm_mp,
                     fill_value=args.fill_value
-                )
+                )[0]
                 for i in range(n_val_total)
             ])
             X_val_mm = np.memmap(X_val_path, dtype=np.float32, mode="w+", shape=(n_val_total, L, C))
@@ -482,7 +484,7 @@ if __name__ == "__main__":
     # 4. Generate samples
     G.eval()
 
-    if args.enable_validation:
+    if args.plot:
         plot_tensor = torch.tensor(X_val_mm[:], dtype=torch.float32)
         if args.enable_mp_embedding:
             plot_tensor = build_mp_embedding_batch(
@@ -498,8 +500,7 @@ if __name__ == "__main__":
             else:
                 fake_data = G(plot_tensor)
         plot_file_names = [f"{args.category}_"+str(i) for i in range(len(plot_tensor))]
-        if args.plot:
-            plot_res(model_save_path, plot_labels, fake_data, plot_file_names, args.m, args.znorm_mp)
+        plot_res(model_save_path, plot_labels, fake_data, plot_file_names, args.m, args.znorm_mp)
 
     # Plot the first feature (D=1 assumed) or slice index 0
     if args.enable_validation:
