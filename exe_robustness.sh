@@ -23,27 +23,14 @@ python3 test/eval_robustness.py \
     -n 500 \
     -m 100 \
     -c ecg \
-    -train_id 0 48 \
-    -test_id 21000 21200 \
-    -e 10 \
     -r 2026 \
-    -k 0.60 \
-    -g_model WillBeNamed \
-    -obj_func exp \
-    -alpha 0.5 \
-    -pi_mp 0.000000 \
-    -pi_mse 1.0 \
-    -pi_pcc 1.0 \
-    -pi_grad 1.0 \
-    -lr_g 0.0008 \
-    -coeff_dist 0.8 \
-    -coeff_index 0.2 \
+    -g_model deepmp \
     -mp_embedding \
     -znorm \
-    -time 10 \
     -fill 100.0 \
-    -test \
-    -rob mpi \
+    -dataset ptbxl\
+    --rob mpd \
+    --eps 1000 \
 
 
 echo "✅ Job completed successfully!"

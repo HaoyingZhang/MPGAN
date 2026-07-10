@@ -170,12 +170,14 @@ def plot_feature_relative_error_boxplot(
     category="ecg",
     fs=100,
     out="paper_figures/feature_relative_error_boxplot.png",
+    features_per_row=7,
 ):
     """
     For each dataset in dataset_paths, load every {category}_{N}/results.json,
     compare features extracted from the reference signal ("time_series" key) and
     the IPOPT reconstruction ("solutions"[0]), compute the relative error per
     feature, and display side-by-side box plots — one colour per dataset.
+    Features are split across multiple rows with `features_per_row` per row.
 
     Parameters
     ----------
@@ -187,9 +189,12 @@ def plot_feature_relative_error_boxplot(
         Sampling frequency passed to extract_ecg_features.
     out : str
         Output PNG path.
+    features_per_row : int
+        Number of features displayed per subplot row.
     """
     from matplotlib.lines import Line2D
     import matplotlib.ticker as ticker
+    import math
 
     NAMED_COLORS = {"arrhythmia": "#E07B54", "ptbxl": "#5B84B1",
                     "ltdb": "#4CAF50", "tdbrain": "#9C59B6", "trajectory": "#F1C40F"}
@@ -227,8 +232,13 @@ def plot_feature_relative_error_boxplot(
             # rec_raw = np.array(data["smoothed"], dtype=np.float64)
 
             try:
-                f_ref = extract_ecg_features(ref_raw, fs=fs)
-                f_rec = extract_ecg_features(rec_raw, fs=fs)
+                if category == "ecg":
+                    f_ref = extract_ecg_features(ref_raw, fs=fs)
+                    f_rec = extract_ecg_features(rec_raw, fs=fs)
+                else:
+                    f_ref = extract_eeg_features(ref_raw, fs=fs)
+                    f_rec = extract_eeg_features(rec_raw, fs=fs)
+                
             except Exception:
                 continue
 
@@ -247,58 +257,22 @@ def plot_feature_relative_error_boxplot(
         return
 
     # ------------------------------------------------------------------ #
-    # 2. Build the figure — narrow side-by-side boxes, single-column style
+    # 2. Build the figure — one row per chunk of `features_per_row` features
     # ------------------------------------------------------------------ #
     matplotlib.rcParams.update({"font.size": 14})
 
     box_w   = 0.22
     group_w = n_datasets * box_w + 0.18
 
-    n_feats = len(feature_keys)
+    n_feats  = len(feature_keys)
+    n_rows   = math.ceil(n_feats / features_per_row)
+    row_w    = features_per_row * (0.35 + 0.12 * n_datasets)
 
-    fig, ax = plt.subplots(figsize=(max(10, n_feats * (0.35 + 0.12 * n_datasets)), 4.5))
-
-    for di, (dataset, errors) in enumerate(all_errors.items()):
-        color         = colors[di]
-        marker        = markers[di]
-        positions     = [i * group_w + di * box_w for i in range(n_feats)]
-        data_per_feat = [errors.get(k, [np.nan]) for k in feature_keys]
-
-        ax.boxplot(
-            data_per_feat,
-            positions=positions,
-            widths=box_w * 0.9,
-            patch_artist=True,
-            boxprops=dict(facecolor=color, alpha=0.8, linewidth=1.1),
-            medianprops=dict(color="white", linewidth=2.2),
-            flierprops=dict(marker=marker, markersize=3.5, alpha=0.55,
-                            markerfacecolor=color, markeredgecolor=color,
-                            markeredgewidth=0.4),
-            whiskerprops=dict(linewidth=1.3, color=color),
-            capprops=dict(linewidth=1.6, color=color),
-            showfliers=True,
-        )
-
-        for x_pos, vals in zip(positions, data_per_feat):
-            finite = [v for v in vals if np.isfinite(v)]
-            if not finite:
-                continue
-            ax.text(x_pos, 10, f"{np.median(finite):.2g}",
-                    ha="center", va="bottom", rotation=90,
-                    fontsize=7, color="black", fontweight="bold")
-
-    # x-ticks at group centre
-    tick_pos = [i * group_w + (n_datasets - 1) * box_w / 2 for i in range(n_feats)]
-    ax.set_xticks(tick_pos)
-    ax.set_xticklabels(feature_keys, rotation=45, ha="right", fontsize=13)
-    ax.set_ylabel("Relative error", fontsize=15)
-    ax.set_yscale("log")
-    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.set_axisbelow(True)
-
-    ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=20))
-    ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
-    ax.tick_params(axis="y", labelsize=13)
+    fig, axes = plt.subplots(
+        n_rows, 1,
+        figsize=(max(10, row_w), 4.5 * n_rows),
+        squeeze=False,
+    )
 
     legend_handles = [
         Line2D([0], [0], marker=markers[i], color="none",
@@ -307,8 +281,55 @@ def plot_feature_relative_error_boxplot(
         for i, ds in enumerate(ds_list)
     ]
     ncol = min(n_datasets, 4)
-    ax.legend(handles=legend_handles, fontsize=12, loc="upper left",
-              framealpha=0.85, edgecolor="#cccccc", ncol=ncol)
+
+    for row_idx in range(n_rows):
+        ax = axes[row_idx, 0]
+        chunk = feature_keys[row_idx * features_per_row : (row_idx + 1) * features_per_row]
+        n_chunk = len(chunk)
+
+        for di, (dataset, errors) in enumerate(all_errors.items()):
+            color         = colors[di]
+            marker        = markers[di]
+            positions     = [i * group_w + di * box_w for i in range(n_chunk)]
+            data_per_feat = [errors.get(k, [np.nan]) for k in chunk]
+
+            ax.boxplot(
+                data_per_feat,
+                positions=positions,
+                widths=box_w * 0.9,
+                patch_artist=True,
+                boxprops=dict(facecolor=color, alpha=0.8, linewidth=1.1),
+                medianprops=dict(color="white", linewidth=2.2),
+                flierprops=dict(marker=marker, markersize=3.5, alpha=0.55,
+                                markerfacecolor=color, markeredgecolor=color,
+                                markeredgewidth=0.4),
+                whiskerprops=dict(linewidth=1.3, color=color),
+                capprops=dict(linewidth=1.6, color=color),
+                showfliers=True,
+            )
+
+            for x_pos, vals in zip(positions, data_per_feat):
+                finite = [v for v in vals if np.isfinite(v)]
+                if not finite:
+                    continue
+                ax.text(x_pos, 10, f"{np.median(finite):.2g}",
+                        ha="center", va="bottom", rotation=90,
+                        fontsize=7, color="black", fontweight="bold")
+
+        tick_pos = [i * group_w + (n_datasets - 1) * box_w / 2 for i in range(n_chunk)]
+        ax.set_xticks(tick_pos)
+        ax.set_xticklabels(chunk, rotation=45, ha="right", fontsize=13)
+        ax.set_ylabel("Relative error", fontsize=15)
+        ax.set_yscale("log")
+        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
+        ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=20))
+        ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
+        ax.tick_params(axis="y", labelsize=13)
+
+        if row_idx == 0:
+            ax.legend(handles=legend_handles, fontsize=12, loc="upper left",
+                      framealpha=0.85, edgecolor="#cccccc", ncol=ncol)
 
     fig.tight_layout()
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -348,30 +369,35 @@ if __name__ == "__main__":
         
         fig = plot_three_ts_with_mp(ts_deepmp, ts_ipopt, ts_original, None, m=100, znorm=True)
         fig.savefig("paper_figures/compare_ipopt_ecg.jpg")
+    
     if args.exp_name == "conformal_prediction":
         # Conformal prediction
+        threshold = {"arrhythmia":0.7, "ptbxl":0.66}
         for dataset in ["arrhythmia", "ptbxl"]:
             base_test_folder = f"src/results/ipopt/{dataset}/"
             ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=True, dataset=dataset, metric=euclidean)
             ranks_mp = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=False, dataset=dataset, metric=euclidean, using_mp=True)
-            plot_rank_distribution({"TS reconstructed": ranks, "MP": ranks_mp}, f"paper_figures/rank_distribution_{dataset}.png", title="Rank Distribution", threshold=0.66)
+            plot_rank_distribution({"TS reconstructed": ranks, "MP": ranks_mp}, f"paper_figures/rank_distribution_{dataset}.png", title="Rank Distribution", threshold=threshold[dataset])
 
 
     # Robustness
     if args.exp_name == "robustness":
         print("Attention! This experiment could take long time!")
-        eval_types = ["mpd","mpi"]
-        fs_legend = 20
-        fs_text = 20
-        fs_label = 16
+        eval_types = ["mpi"]
+        fs_legend = 16
+        fs_text = 16
+        fs_label = 12
+        vec_size = 401
         datasets = ["arrhythmia", "ptbxl"]
 
         for eval_type in eval_types:
         
-            baseline_accuracy = {"arrhythmia":0.129, "ptbxl":0.045}
+            baseline_accuracy = {"arrhythmia":0.142, "ptbxl":0.065} # for MPI
+            # baseline_accuracy = {"arrhythmia":0.15416666666666667, "ptbxl":0.065} # for MPD
             test_id = {"arrhythmia":[0,48], "ptbxl":[21200,21400]}
             epsilon = [100.0,1000.0,10000.0,100000.0,500000.0,800000.0, 1000000.0,100000000.0]
-            
+            # epsilon = [10000.0,100000.0,500000.0]
+                    
             root_path = os.path.join("src/results/baseline/ptbxl/")
 
             results_path = os.path.join("src/results/baseline/ptbxl", f"eval_robustness_{eval_type}_results.json")
@@ -405,9 +431,9 @@ if __name__ == "__main__":
                         all_results[dataset][eps_key]["utility_loss"] = []
                     existing_runs = len(all_results[dataset][eps_key]["acc"])
                     for run in range(existing_runs, 5):
-                        cmd = ["python3", "test/eval_robustness.py", "-dataset", dataset, "-eps", str(eps),
+                        cmd = ["python3", "test/eval_robustness.py", "-dataset", dataset, "--eps", str(eps),
                             "-n_ts", "200", "-n", "500", "-m", "100", "-c", "ecg", "-g_model", "deepmp",
-                            "-mp_embedding", "-znorm", "-fill", "100", "-test", "-rob", eval_type ]
+                            "-mp_embedding", "-znorm", "-fill", "100", "--rob", eval_type ]
                         subprocess.run(cmd, check=True)
                         base_test_folder = os.path.join(root_path, dataset, eval_type, str(eps))
                         loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
@@ -445,11 +471,11 @@ if __name__ == "__main__":
                 utility_loss_std_list.append(utility_loss_std)
 
             def fmt_eps(v):
-                exp = int(np.log10(v))
-                coeff = round(v / 10**exp)
+                exp = int(np.floor(np.log10(v)))
+                coeff = round(v / 10**exp, 1)
                 return f"${coeff}\\times10^{{{exp}}}$"
 
-            eps_labels = [fmt_eps(e) for e in epsilon]
+            eps_labels = [fmt_eps(e/vec_size) for e in epsilon]
 
             from matplotlib.ticker import PercentFormatter
             matplotlib.rcParams.update({"font.size": 13})
@@ -471,14 +497,22 @@ if __name__ == "__main__":
                 ax1b.errorbar(x, ul_vals, yerr=ul_stds,
                             marker="s", color=c, linestyle="--", alpha=0.5,
                             capsize=4, capthick=1.2, elinewidth=1.2)
+                rir_limit = 0.05 / b
+                print(f"RIR limit gain for dataset {dataset}: {rir_limit}")
+                ax1.axhline(y=rir_limit, color=c, linestyle="--", linewidth=1.2)
+
             ax1.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
-            ax1.set_ylim(0, 1.0)
+            #ax1.set_ylim(0, 1.0)
+
             ax1.set_xticks(x)
             ax1.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
             ax1.set_xlabel("Epsilon", fontsize=fs_text)
-            ax1.set_ylabel("RIR Gain (%)", fontsize=fs_text)
-            ax1b.set_ylabel("Utility Loss", fontsize=fs_text)
-            # ax1.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+            ax1.set_ylabel("RIR Gain", fontsize=fs_text)
+            if eval_type == "mpd":
+                ax1b.set_ylabel("1-PCC", fontsize=fs_text)
+            else:
+                ax1b.set_ylabel("EMD", fontsize=fs_text)
+            ax1.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
             fig1.tight_layout()
             fig1.savefig(f"paper_figures/robustness_{eval_type}_reidentification.png", dpi=150, bbox_inches="tight")
             print(f"Saved paper_figures/robustness_{eval_type}_reidentification.png")
@@ -500,8 +534,8 @@ if __name__ == "__main__":
             ax2.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
             ax2.set_xlabel("Epsilon", fontsize=fs_text)
             ax2.set_ylabel("Mean PCC", fontsize=fs_text)
-            ax2b.set_ylabel("Utility Loss", fontsize=fs_text)
-            # ax2.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+            ax2b.set_ylabel("RMSE", fontsize=fs_text)
+            ax2.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
             fig2.tight_layout()
             fig2.savefig(f"paper_figures/robustness_{eval_type}_reconstruction.png", dpi=150, bbox_inches="tight")
             print(f"Saved paper_figures/robustness_{eval_type}_reconstruction.png")

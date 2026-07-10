@@ -114,7 +114,7 @@ if __name__ == "__main__":
     G.eval()
 
     if args.dataset in ("arrhythmia", "arrhythmia_xl"):
-        indices_ts = [0,500,1000,2000,2500]
+        indices_ts = [500, 1000, 1500, 2000,2500]
     elif args.dataset in ("ptbxl", "t-drive"):
         indices_ts = [500]
     else:
