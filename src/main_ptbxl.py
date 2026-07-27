@@ -159,7 +159,8 @@ if __name__ == "__main__":
     parser.add_argument("-val", "--enable_validation", action="store_true", help="Use validation set in training")
     parser.add_argument("-n_val", type=int, default=1000, help="Number of validation time series (non-overlapping, starting at signal position 20000)")
     parser.add_argument("-freq", "--frequency", type=int, default=None, help="Target sampling frequency for EEG data; downsamples if lower than EEG_ORIGINAL_FREQUENCY (500 Hz)")
-
+    parser.add_argument("-disable_rdb","--disable_residual", action="store_true", help="Disable Residual Dilated Conv Block")
+    parser.add_argument("-attention","--attention", action="store_true", help="Enable Attention Layer")
     args = parser.parse_args()
 
     if args.obj_func not in ["relu", "exp"]:
@@ -441,11 +442,12 @@ if __name__ == "__main__":
                 base_channels=64,
                 num_blocks=6,
                 dilations=(1,2,4,8,16,32),
-                use_attention=True,
+                use_attention=args.attention,
                 z_dim=64 if args.enable_latent else None,
                 y_dim=None,       
                 use_in_proj=args.enable_inj_proj,
-                dropout=args.enable_drop_out
+                dropout=args.enable_drop_out,
+                disable_residual=args.disable_residual
             )
     elif args.g_model == "transformer":
         G = G_Transformer(n=n, m=m, d_model=args.m, nhead=5)

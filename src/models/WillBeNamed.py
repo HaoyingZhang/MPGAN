@@ -20,15 +20,16 @@ class FiLM(nn.Module):
 
 
 class ResDilatedBlock(nn.Module):
-    def __init__(self, channels, dilation, film: FiLM | None = None, p_drop: float = 0.1):
+    def __init__(self, channels, dilation, film: FiLM | None = None, p_drop: float = 0.1, disable_residual: bool = False):
         super().__init__()
         self.conv1 = nn.Conv1d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation)
-        self.norm1 = make_group_norm(channels)  
+        self.norm1 = make_group_norm(channels)
         self.norm2 = make_group_norm(channels)
         self.film = film
         self.act = nn.GELU()
         self.drop = nn.Dropout(p_drop)
+        self.disable_residual = disable_residual
 
     def forward(self, x, gamma=None, beta=None):
         # x: [B,C,L]
@@ -44,7 +45,7 @@ class ResDilatedBlock(nn.Module):
         h2 = self.act(h2)
         # h2 = self.drop(h2)
         h2 = self.conv2(h2)
-        return x + h2
+        return h2 if self.disable_residual else x + h2
 
 
 class SelfAttention1D(nn.Module):
@@ -110,7 +111,8 @@ class Generator(nn.Module):
         p_drop=0.1,
         attn_drop=0.1,
         proj_drop=0.1,
-        dropout=True
+        dropout=True,
+        disable_residual=False
     ):
         super().__init__()
         assert num_blocks == len(dilations), "num_blocks must match length of dilations"
@@ -132,13 +134,14 @@ class Generator(nn.Module):
             self.in_proj   = nn.Identity()
 
         self.film = FiLM(cond_dim, film_hidden, block_channels) if cond_dim > 0 else None
-
+        print(f"Using residual connection in blocks : {not disable_residual}")
         self.blocks = nn.ModuleList([
-            ResDilatedBlock(block_channels, d, film=self.film, p_drop=p_drop)
+            ResDilatedBlock(block_channels, d, film=self.film, p_drop=p_drop, disable_residual=disable_residual)
             for d in dilations
         ])
 
         self.attn = SelfAttention1D(block_channels, num_heads=4, proj_drop=proj_drop) if use_attention else None
+        print(f"Using attention layer : {use_attention}")
 
         self.mid_norm = make_group_norm(block_channels) 
         self.mid_act  = nn.GELU()
