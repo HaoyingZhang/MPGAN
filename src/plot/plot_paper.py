@@ -13,7 +13,7 @@ from src.utils import rmse, pearson_correlation
 from eval import conformal_prediction
 from eval import compute_loss_from_folder, compute_utility_loss_from_folder
 from reidentify import reidentification_attack
-from features_extraction import extract_ecg_features, extract_eeg_features
+from features_extraction import extract_ecg_features, extract_eeg_features, extract_eeg_features_bis
 import argparse
 
 
@@ -236,8 +236,8 @@ def plot_feature_relative_error_boxplot(
                     f_ref = extract_ecg_features(ref_raw, fs=fs)
                     f_rec = extract_ecg_features(rec_raw, fs=fs)
                 else:
-                    f_ref = extract_eeg_features(ref_raw, fs=fs)
-                    f_rec = extract_eeg_features(rec_raw, fs=fs)
+                    f_ref = extract_eeg_features_bis(ref_raw, fs=fs)
+                    f_rec = extract_eeg_features_bis(rec_raw, fs=fs)
                 
             except Exception:
                 continue
@@ -259,7 +259,7 @@ def plot_feature_relative_error_boxplot(
     # ------------------------------------------------------------------ #
     # 2. Build the figure — one row per chunk of `features_per_row` features
     # ------------------------------------------------------------------ #
-    matplotlib.rcParams.update({"font.size": 14})
+    matplotlib.rcParams.update({"font.size": 18})
 
     box_w   = 0.22
     group_w = n_datasets * box_w + 0.18
@@ -270,7 +270,7 @@ def plot_feature_relative_error_boxplot(
 
     fig, axes = plt.subplots(
         n_rows, 1,
-        figsize=(max(10, row_w), 4.5 * n_rows),
+        figsize=(max(10, row_w), 6.5 * n_rows),
         squeeze=False,
     )
 
@@ -314,21 +314,21 @@ def plot_feature_relative_error_boxplot(
                     continue
                 ax.text(x_pos, 10, f"{np.median(finite):.2g}",
                         ha="center", va="bottom", rotation=90,
-                        fontsize=7, color="black", fontweight="bold")
+                        fontsize=10, color="black", fontweight="bold")
 
         tick_pos = [i * group_w + (n_datasets - 1) * box_w / 2 for i in range(n_chunk)]
         ax.set_xticks(tick_pos)
-        ax.set_xticklabels(chunk, rotation=45, ha="right", fontsize=13)
-        ax.set_ylabel("Relative error", fontsize=15)
+        ax.set_xticklabels(chunk, rotation=45, ha="right", fontsize=17)
+        ax.set_ylabel("Relative error", fontsize=20)
         ax.set_yscale("log")
         ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
         ax.set_axisbelow(True)
         ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=20))
         ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
-        ax.tick_params(axis="y", labelsize=13)
+        ax.tick_params(axis="y", labelsize=17)
 
         if row_idx == 0:
-            ax.legend(handles=legend_handles, fontsize=12, loc="upper left",
+            ax.legend(handles=legend_handles, fontsize=16, loc="upper left",
                       framealpha=0.85, edgecolor="#cccccc", ncol=ncol)
 
     fig.tight_layout()
@@ -342,16 +342,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", type=str, default="ecg", help="Dataset category")
     parser.add_argument("--exp_name",type=str, choices=["robustness", "plot_ipopt", "conformal_prediction", "features"], help="Use solution after ipopt")
+    parser.add_argument("--datasets", nargs="+", default=["ptbxl"], help="Datasets plotted in the robustness experiment")
+    parser.add_argument("--rob", nargs="+", default=["mpd", "mpi"], choices=["mpd", "mpi", "both"],
+                        help="Perturbation modes plotted in the robustness experiment")
 
     args = parser.parse_args()
 
     if args.exp_name == "plot_ipopt":
-
-        deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_188/results.json"
-        # ipopt_only_path = "src/results/ipopt/ptbxl/ecg_188/results.json"
-        ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_188/results.json"
-        # deepmp_sol_path = "src/results/baseline/eeg/tdbrain/eeg_118/results.json"
-        # ipopt_sol_path = "src/results/ipopt/eeg/eeg_118/results.json"
+        if args.category == "ecg":
+            deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_115/results.json"
+            ipopt_only_path = "src/results/ipopt/ptbxl_with_only_ipopt_sol/ecg_115/results.json"
+            ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_115/results.json"
+        else:
+            # deepmp_sol_path = "src/results/baseline/eeg/tdbrain/eeg_70/results.json"
+            # ipopt_sol_path = "src/results/ipopt/eeg/eeg_70/results.json"
+            deepmp_sol_path = "src/results/baseline/eeg_160hz/tdbrain/eeg_170/results.json"
+            ipopt_sol_path = "src/results/ipopt/eeg_160hz/eeg_170/results.json"
 
         with open(deepmp_sol_path, "r") as f:
             res = json.load(f)
@@ -363,112 +369,94 @@ if __name__ == "__main__":
             ts_ipopt = res["solutions"][0]
             ts_smooth = res["smoothed"]
         
-        # with open(ipopt_only_path, "r") as f:
-        #     res = json.load(f)
-        #     ts_ipopt_only = res["solutions"][0]
+        if args.category == "ecg":
+            with open(ipopt_only_path, "r") as f:
+                res = json.load(f)
+                ts_ipopt_only = res["solutions"][0]
         
-        fig = plot_three_ts_with_mp(ts_deepmp, ts_ipopt, ts_original, None, m=100, znorm=True)
-        fig.savefig("paper_figures/compare_ipopt_ecg.jpg")
+        if args.category == "ecg":
+            fig = plot_three_ts_with_mp(ts_deepmp, ts_ipopt, ts_original, None, m=100, znorm=True)
+            fig.savefig("paper_figures/compare_ipopt_ecg.jpg")
+        else:
+            fig = plot_three_ts_with_mp(ts_deepmp, ts_smooth, ts_original, ts_ipopt, m=100, znorm=True)
+            fig.savefig("paper_figures/compare_ipopt_eeg.jpg")
     
     if args.exp_name == "conformal_prediction":
         # Conformal prediction
-        threshold = {"arrhythmia":0.7, "ptbxl":0.66}
-        for dataset in ["arrhythmia", "ptbxl"]:
-            base_test_folder = f"src/results/ipopt/{dataset}/"
-            ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=True, dataset=dataset, metric=euclidean)
+        threshold = {"arrhythmia":0.7, "ptbxl":0.66, "ptb_diagnostic":0.66, "tdbrain":0.22}
+        for dataset in ["tdbrain"]:
+            base_test_folder =  f"src/results/ipopt/eeg/" if args.category == "eeg" else f"src/results/ipopt/{dataset}/"
+            ranks = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[1000,1500,2000], using_features=True, dataset=dataset, metric=euclidean)
             ranks_mp = conformal_prediction(n=500, m=100, base_folder_test=base_test_folder, ref_index=[0], using_features=False, dataset=dataset, metric=euclidean, using_mp=True)
             plot_rank_distribution({"TS reconstructed": ranks, "MP": ranks_mp}, f"paper_figures/rank_distribution_{dataset}.png", title="Rank Distribution", threshold=threshold[dataset])
 
 
     # Robustness
     if args.exp_name == "robustness":
-        print("Attention! This experiment could take long time!")
-        eval_types = ["mpi"]
+        # Plots the raw results stored by test/eval_robustness.py (see exe_robustness.sh) in
+        # <root>/<dataset>/<rob>/<eps dir>/eval_metrics.json: per-sample metrics as
+        # [[run 1 samples], ...] and the re-identification rate as [run 1, ...].
+        # Each run is first averaged over its samples, then mean and standard error over runs.
+        eval_types = args.rob
         fs_legend = 16
         fs_text = 16
         fs_label = 12
         vec_size = 401
-        datasets = ["arrhythmia", "ptbxl"]
+        datasets = args.datasets
+        root_path = "src/results/baseline/ptbxl/" if args.category == "ecg" else "src/results/baseline/eeg_160hz/"
+
+        def run_stats(runs):
+            per_run = [np.nanmean(r) if isinstance(r, list) else r for r in runs]
+            if not per_run:
+                return np.nan, np.nan
+            return np.nanmean(per_run), np.nanstd(per_run) / np.sqrt(len(per_run))
+
+        rir_limit = 0.05
 
         for eval_type in eval_types:
-        
-            baseline_accuracy = {"arrhythmia":0.142, "ptbxl":0.065} # for MPI
-            # baseline_accuracy = {"arrhythmia":0.15416666666666667, "ptbxl":0.065} # for MPD
-            test_id = {"arrhythmia":[0,48], "ptbxl":[21200,21400]}
             epsilon = [100.0,1000.0,10000.0,100000.0,500000.0,800000.0, 1000000.0,100000000.0]
-            # epsilon = [10000.0,100000.0,500000.0]
-                    
-            root_path = os.path.join("src/results/baseline/ptbxl/")
 
-            results_path = os.path.join("src/results/baseline/ptbxl", f"eval_robustness_{eval_type}_results.json")
-            os.makedirs(os.path.dirname(results_path), exist_ok=True)
-            if os.path.exists(results_path):
-                with open(results_path) as f:
-                    all_results = json.load(f)
-            else:
-                all_results = {}
+            # older runs (before eval_metrics.json) were cached per run as {dataset: {eps: {"pcc", "acc",
+            # "utility_loss"}}}, utility_loss being the 1-PCC of the MPD for mpd and the EMD otherwise
+            legacy_file = os.path.join(root_path, f"eval_robustness_{eval_type}_results.json")
+            legacy = {}
+            if os.path.exists(legacy_file):
+                with open(legacy_file) as f:
+                    legacy = json.load(f)
 
-            pcc_list = []
-            pcc_std_list = []
-            accuracy_list = []
-            accuracy_std_list = []
-            utility_loss_list = []
-            utility_loss_std_list = []
+            # raw results, per dataset and eps
+            results = {}
             for dataset in datasets:
-                if dataset not in all_results:
-                    all_results[dataset] = {}
-                dataset_res = []
-                dataset_res_std = []
-                reidentify = []
-                reidentify_std = []
-                utility_loss = []
-                utility_loss_std = []
+                results[dataset] = []
                 for eps in epsilon:
-                    eps_key = str(eps)
-                    if eps_key not in all_results[dataset]:
-                        all_results[dataset][eps_key] = {"pcc": [], "acc": [], "utility_loss": []}
-                    elif "utility_loss" not in all_results[dataset][eps_key]:
-                        all_results[dataset][eps_key]["utility_loss"] = []
-                    existing_runs = len(all_results[dataset][eps_key]["acc"])
-                    for run in range(existing_runs, 5):
-                        cmd = ["python3", "test/eval_robustness.py", "-dataset", dataset, "--eps", str(eps),
-                            "-n_ts", "200", "-n", "500", "-m", "100", "-c", "ecg", "-g_model", "deepmp",
-                            "-mp_embedding", "-znorm", "-fill", "100", "--rob", eval_type ]
-                        subprocess.run(cmd, check=True)
-                        base_test_folder = os.path.join(root_path, dataset, eval_type, str(eps))
-                        loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean")
-                        accuracy = reidentification_attack(base_test_folder,
-                                                        ipopt=False,
-                                                        dataset=dataset,
-                                                        category="ecg",
-                                                        use_mp=False,
-                                                        classifier="svm",
-                                                        use_feature=True,
-                                                        use_original=False,
-                                                        distance=False)
-                        loss_utility = compute_utility_loss_from_folder(base_test_folder, stat="mean")
-                        all_results[dataset][eps_key]["pcc"].append(float(loss_test))
-                        all_results[dataset][eps_key]["acc"].append(float(accuracy))
-                        all_results[dataset][eps_key]["utility_loss"].append(float(loss_utility))
-                        with open(results_path, "w") as f:
-                            json.dump(all_results, f, indent=2)
-                        print(f"[{dataset}] eps={eps} run {run+1}/5 — pcc={loss_test:.4f} acc={accuracy:.4f} utility loss={loss_utility:.4f}")
-                    acc_runs = all_results[dataset][eps_key]["acc"]
-                    ul_runs  = all_results[dataset][eps_key]["utility_loss"]
-                    n_runs   = max(len(acc_runs), 1)
-                    pcc_runs = all_results[dataset][eps_key]["pcc"]
-                    dataset_res.append(np.mean(pcc_runs))
-                    dataset_res_std.append(np.std(pcc_runs) / np.sqrt(max(len(pcc_runs), 1)))
-                    reidentify.append(np.mean(acc_runs))
-                    reidentify_std.append(np.std(acc_runs) / np.sqrt(n_runs))
-                    utility_loss.append(np.mean(ul_runs))
-                    utility_loss_std.append(np.std(ul_runs) / np.sqrt(n_runs))
-                pcc_list.append(dataset_res)
-                pcc_std_list.append(dataset_res_std)
-                accuracy_list.append(reidentify)
-                accuracy_std_list.append(reidentify_std)
-                utility_loss_list.append(utility_loss)
-                utility_loss_std_list.append(utility_loss_std)
+                    eps_dir = f"{eval_type}{eps}" if eval_type in ("mpd", "mpi") else str(eps)
+                    metrics_file = os.path.join(root_path, dataset, eval_type, eps_dir, "eval_metrics.json")
+                    res = {}
+                    if os.path.exists(metrics_file):
+                        with open(metrics_file) as f:
+                            res = json.load(f)
+                    elif str(eps) in legacy.get(dataset, {}):
+                        old = legacy[dataset][str(eps)]
+                        res = {"reconstruction_pcc": old["pcc"], "reidentification_rate": old["acc"],
+                               "pcc" if eval_type == "mpd" else "emd": old["utility_loss"]}
+                        print(f"[{dataset}] {eval_type} eps={eps}: using the older results of {legacy_file}")
+                    else:
+                        print(f"[{dataset}] missing {metrics_file}, run exe_robustness.sh first")
+                    results[dataset].append(res)
+
+            def metric_stats(name):
+                """[mean per eps] and [standard error per eps] of one metric, one list per dataset."""
+                means, stds = [], []
+                for dataset in datasets:
+                    stats_eps = [run_stats(res.get(name, [])) for res in results[dataset]]
+                    means.append([s[0] for s in stats_eps])
+                    stds.append([s[1] for s in stats_eps])
+                return means, stds
+
+            # every other stored metric is a utility metric (MP distances and peak metrics)
+            utility_names = sorted({name for dataset in datasets for res in results[dataset] for name in res}
+                                   - {"reconstruction_pcc", "reidentification_rate"})
+            utility_labels = {"pcc": "1-PCC (MPD)", "emd": "EMD (MPI)", "rmse": "RMSE (MPI)"}
 
             def fmt_eps(v):
                 exp = int(np.floor(np.log10(v)))
@@ -481,76 +469,63 @@ if __name__ == "__main__":
             matplotlib.rcParams.update({"font.size": 13})
             x = np.arange(len(epsilon))
             colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-            os.makedirs("paper_figures", exist_ok=True)
+            # one folder per dataset (or per combination when several are plotted together)
+            out_dir = os.path.join("paper_figures/robustness", "_".join(datasets))
+            os.makedirs(out_dir, exist_ok=True)
 
-            # Plot 1: Re-identification accuracy + utility loss (right axis)
-            fig1, ax1 = plt.subplots(figsize=(5.5, 4))
-            ax1b = ax1.twinx()
-            for i, (dataset, acc_vals, acc_stds, ul_vals, ul_stds) in enumerate(
-                    zip(datasets, accuracy_list, accuracy_std_list, utility_loss_list, utility_loss_std_list)):
-                c = colors[i % len(colors)]
-                b = baseline_accuracy[dataset]
-                ax1.errorbar(x, [acc / b for acc in acc_vals],
-                            yerr=[s / b for s in acc_stds],
-                            marker="o", color=c, linestyle="-", label=dataset,
-                            capsize=4, capthick=1.2, elinewidth=1.2)
-                ax1b.errorbar(x, ul_vals, yerr=ul_stds,
-                            marker="s", color=c, linestyle="--", alpha=0.5,
-                            capsize=4, capthick=1.2, elinewidth=1.2)
-                rir_limit = 0.05 / b
-                print(f"RIR limit gain for dataset {dataset}: {rir_limit}")
-                ax1.axhline(y=rir_limit, color=c, linestyle="--", linewidth=1.2)
+            def plot_figure(left_name, left_label, utility_name, out):
+                """left_name on the left axis (solid), utility_name on the right axis (dashed), one color per dataset."""
+                left_vals, left_stds = metric_stats(left_name)
+                ul_vals, ul_stds = metric_stats(utility_name)
+                fig, ax = plt.subplots(figsize=(5.5, 4))
+                axb = ax.twinx()
+                for i, dataset in enumerate(datasets):
+                    c = colors[i % len(colors)]
+                    ax.errorbar(x, left_vals[i], yerr=left_stds[i],
+                                marker="o", color=c, linestyle="-", label=dataset,
+                                capsize=4, capthick=1.2, elinewidth=1.2)
+                    axb.errorbar(x, ul_vals[i], yerr=ul_stds[i],
+                                 marker="s", color=c, linestyle="--", alpha=0.5,
+                                 capsize=4, capthick=1.2, elinewidth=1.2)
 
-            ax1.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
-            #ax1.set_ylim(0, 1.0)
+                if left_name == "reidentification_rate":
+                    ax.axhline(y=rir_limit, color="gray", linestyle=":", linewidth=1.2)
+                    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+                else:
+                    ax.set_ylim(0, 0.6)
+                ax.set_xticks(x)
+                ax.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
+                ax.set_xlabel("Epsilon", fontsize=fs_text)
+                ax.set_ylabel(left_label, fontsize=fs_text)
+                axb.set_ylabel(utility_labels.get(utility_name, utility_name), fontsize=fs_text)
+                ax.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+                fig.tight_layout()
+                fig.savefig(out, dpi=150, bbox_inches="tight")
+                plt.close(fig)
+                print(f"Saved {out}")
 
-            ax1.set_xticks(x)
-            ax1.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
-            ax1.set_xlabel("Epsilon", fontsize=fs_text)
-            ax1.set_ylabel("RIR Gain", fontsize=fs_text)
-            if eval_type == "mpd":
-                ax1b.set_ylabel("1-PCC", fontsize=fs_text)
-            else:
-                ax1b.set_ylabel("EMD", fontsize=fs_text)
-            ax1.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
-            fig1.tight_layout()
-            fig1.savefig(f"paper_figures/robustness_{eval_type}_reidentification.png", dpi=150, bbox_inches="tight")
-            print(f"Saved paper_figures/robustness_{eval_type}_reidentification.png")
+            for utility_name in utility_names:
+                utility_tag = utility_name.replace("@", "_at")
+                plot_figure("reidentification_rate", "RIR", utility_name,
+                            os.path.join(out_dir, f"{eval_type}_reidentification_{utility_tag}.png"))
+                plot_figure("reconstruction_pcc", "Mean PCC", utility_name,
+                            os.path.join(out_dir, f"{eval_type}_reconstruction_{utility_tag}.png"))
 
-            # Plot 2: Mean PCC + utility loss (right axis)
-            fig2, ax2 = plt.subplots(figsize=(5.5, 4))
-            ax2b = ax2.twinx()
-            for i, (dataset, pcc_vals, pcc_stds, ul_vals, ul_stds) in enumerate(
-                    zip(datasets, pcc_list, pcc_std_list, utility_loss_list, utility_loss_std_list)):
-                c = colors[i % len(colors)]
-                ax2.errorbar(x, pcc_vals, yerr=pcc_stds,
-                            marker="o", color=c, linestyle="-", label=dataset,
-                            capsize=4, capthick=1.2, elinewidth=1.2)
-                ax2b.errorbar(x, ul_vals, yerr=ul_stds,
-                            marker="s", color=c, linestyle="--", alpha=0.5,
-                            capsize=4, capthick=1.2, elinewidth=1.2)
-            ax2.set_ylim(0, 0.6)
-            ax2.set_xticks(x)
-            ax2.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
-            ax2.set_xlabel("Epsilon", fontsize=fs_text)
-            ax2.set_ylabel("Mean PCC", fontsize=fs_text)
-            ax2b.set_ylabel("RMSE", fontsize=fs_text)
-            ax2.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
-            fig2.tight_layout()
-            fig2.savefig(f"paper_figures/robustness_{eval_type}_reconstruction.png", dpi=150, bbox_inches="tight")
-            print(f"Saved paper_figures/robustness_{eval_type}_reconstruction.png")
+
     if args.exp_name == "features":
         ## Plot the feature preservation for ECG datasets
         if args.category == "ecg":
             dataset_paths = {
-                "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
-                "ptbxl":      "src/results/ipopt/ptbxl/",
-                "ltdb": "src/results/ipopt/ltdb"
+                # "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
+                # "ptbxl":      "src/results/ipopt/ptbxl/",
+                # "ltdb": "src/results/ipopt/ltdb",
+                "ptb_diagnostic": "src/results/ipopt/ptb_diagnostic"
             }
             fs = 100
         else:
             dataset_paths = {
-                "tdbrain": "src/results/ipopt/eeg_ind_500/"
+                "eegmmidb": "src/results/ipopt/eegmmidb/",
+                "tdbrain": "src/results/ipopt/eeg_160hz/"
             }
-            fs = 500
-        plot_feature_relative_error_boxplot(dataset_paths, category=args.category, fs=fs, out=f"paper_figures/feature_relative_error_boxplot_{args.category}.png")
+            fs = 160
+        plot_feature_relative_error_boxplot(dataset_paths, category=args.category, fs=fs, out=f"paper_figures/feature_relative_error_boxplot_{args.category}.png", features_per_row=34)

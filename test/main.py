@@ -64,26 +64,41 @@ def pearson_r2(y_pred, y_true, eps=1e-8):
     return r ** 2
 
 
-def plot_res(folder_name, real_data, fake_data, utility_distance, name_list, m, znorm, plot=True):
+def plot_res(folder_name, real_data, fake_data, mp_original, mp_perturbed, utility_distance, name_list, m, znorm, plot=True):
+    """mp_original / mp_perturbed: per-sample MPs of shape (L, 2), columns [mpd, mpi]."""
     original_color = 'tab:blue'
     fake_color = 'tab:red'
-    for real_ts, fake_ts, file_name, utility_loss in zip(real_data, fake_data, name_list, utility_distance):
+    for real_ts, fake_ts, mp_orig, mp_pert, file_name, utility_loss in zip(real_data, fake_data, mp_original, mp_perturbed, name_list, utility_distance):
         file_name_short = os.path.splitext(os.path.basename(file_name))[0]
         real_ts = real_ts.numpy().squeeze().astype(np.float64)
         fake_ts = fake_ts.numpy().squeeze().astype(np.float64)
         fake_ts = normalize(fake_ts)
         os.makedirs(os.path.join(folder_name, file_name_short), exist_ok=True)
+        mp_real = stumpy.stump(real_ts, m=m, normalize=znorm)
         res_json = {
             "data": real_ts.tolist(),
             "fake_data": fake_ts.tolist(),
-            "utility_loss": float(utility_loss)
+            "mp_original": np.asarray(mp_orig).tolist(),
+            "mp_perturbed": np.asarray(mp_pert).tolist(),
         }
 
-        with open(os.path.join(folder_name, file_name_short, "results.json"), "w") as f:
+        # Keep the utility metrics accumulated over previous runs (written by test/eval_utility.py)
+        # and append this run's distances to the previous ones ({metric: [run 1, run 2, ...]})
+        res_file = os.path.join(folder_name, file_name_short, "results.json")
+        previous = {}
+        if os.path.exists(res_file):
+            with open(res_file) as f:
+                previous = json.load(f)
+            if "utility_metrics" in previous:
+                res_json["utility_metrics"] = previous["utility_metrics"]
+        past_loss = previous.get("utility_loss", {})
+        past_loss = past_loss if isinstance(past_loss, dict) else {}  # older runs stored a single float
+        res_json["utility_loss"] = {name: past_loss.get(name, []) + [float(v)] for name, v in utility_loss.items()}
+
+        with open(res_file, "w") as f:
             json.dump(res_json, f, indent=4)
         
         if plot:
-            mp_real = stumpy.stump(real_ts, m=m, normalize=znorm)
             mp_fake = stumpy.stump(fake_ts, m=m, normalize=znorm)
             mp_real_clean = mp_real[:, [0, 1]].astype(np.float32)
             mp_real_clean = np.nan_to_num(mp_real_clean, nan=0.0, posinf=0.0, neginf=0.0)

@@ -15,36 +15,26 @@ from sklearn.preprocessing import StandardScaler
 from src.utils import pearson_correlation, normalize, rmse_inv_check, partial_rmse, partial_pearson_correlation, detection_peak, cardiac_frequency, delta_loss, alpha_loss, entropy_loss, kurtosis_loss
 import argparse
 from reidentify import reidentification_attack
+from loader import ptb_diagnostic_loader, eegmmidb_loader, eegmmidb_subjects, SOURCE_HZ
 
 def compute_loss_from_folder(base_folder, loss_function, m=200, epsilon=0.7, stat="mean", dataset = "ecg", ipopt=False):
     mse_list = []
     for folder in os.listdir(base_folder):
         eval_folder = os.path.join(base_folder, folder)
-        if dataset == "ecg":
-            if os.path.isdir(eval_folder) and re.fullmatch(r"ecg_\d+", folder):
-                res_file = os.path.join(eval_folder, "results.json")
-                with open(res_file) as json_data:
-                    d = json.load(json_data)
-                    if ipopt:
-                        ts_original = np.array(d["time_series"])
-                        ts_fake = np.array(d["solutions"][0])
-                    
-                    else:
-                        ts_original = np.array(d["data"])
-                        ts_fake = np.array(d["fake_data"])
-        elif dataset == "eeg":
-            if os.path.isdir(eval_folder) and re.fullmatch(r"eeg_\d+", folder):
-                res_file = os.path.join(eval_folder, "results.json")
-                with open(res_file) as json_data:
-                    d = json.load(json_data)
-                    if ipopt:
-                        ts_original = np.array(d["time_series"])
-                        ts_fake = np.array(d["smoothed"])
-                        # ts_fake = np.array(d["solutions"][0])
-                    
-                    else:
-                        ts_original = np.array(d["data"])
-                        ts_fake = np.array(d["fake_data"])
+        # Skip anything that is not a result folder (e.g. data_loader.py), otherwise the
+        # previous iteration's series would be reused (or undefined on the first one)
+        if not (os.path.isdir(eval_folder) and re.fullmatch(rf"{dataset}_\d+", folder)):
+            continue
+        res_file = os.path.join(eval_folder, "results.json")
+        with open(res_file) as json_data:
+            d = json.load(json_data)
+            if ipopt:
+                ts_original = np.array(d["time_series"])
+                ts_fake = np.array(d["smoothed"])  # EEG: not stored in eeg_160hz results
+                # ts_fake = np.array(d["solutions"][0])
+            else:
+                ts_original = np.array(d["data"])
+                ts_fake = np.array(d["fake_data"])
 
         if (loss_function.__name__ == "partial_pearson_correlation") or (loss_function.__name__ == "partial_rmse"):
             loss = loss_function(ts_original, ts_fake, m=m, epsilon=epsilon)
@@ -243,7 +233,7 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
     :param n: Length of time series
     :param m: Subsequence length
     :param base_folder_test: Base folder containing per-result subfolders
-    :param dataset: Dataset used ("ptbxl" or "arrhythmia")
+    :param dataset: Dataset used ("ptbxl", "arrhythmia", "arrhythmia_xl", "ltdb", "tdbrain", "ptb_diagnostic" or "eegmmidb")
     :param ref_index: List of start indices for reference subsequences
     :param using_features: Enable using hand-crafted features instead of raw time series
     :param using_mp: Enable using matrix profile (MPD ++ MPI, normalized) instead of raw time series
@@ -275,8 +265,22 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
         file_root = os.path.join( "data", "TDBRAIN-dataset")
         list_patient = pd.read_csv(os.path.join(file_root, "participants.tsv"), sep="\t")["participant_id"].tolist()
         files = [os.path.join(file_root, file, "ses-1", "eeg", f"{file}_ses-1_task-restEC_eeg.vhdr") for file in list_patient[1000:1200]]
+    elif dataset == "ptb_diagnostic":
+        # IPOPT reconstructions only exist for a subset of patients (the solve didn't
+        # complete for all of them), so restrict the attacker's training set to exactly
+        # the patients present in base_folder_test — same sorted order as the test-set
+        # scan below, so id_ts lines up with the reference index (mirrors reidentify.py).
+        test_dirs = sorted(
+            [d for d in os.listdir(base_folder_test)
+             if os.path.isdir(os.path.join(base_folder_test, d)) and d.startswith("ecg_") and d.split("_")[1].isdigit()],
+            key=lambda d: int(d.split("_")[1]),
+        )
+        files = [int(d.split("_")[1]) for d in test_dirs]
+    elif dataset == "eegmmidb":
+        # Index into eegmmidb_subjects(), one entry per subject (S001..S109)
+        files = list(range(len(eegmmidb_subjects())))
     else:
-        raise ValueError(f"Unknown dataset: {dataset!r}. Expected 'ptbxl', 'arrhythmia' or 'ltdb'.")
+        raise ValueError(f"Unknown dataset: {dataset!r}. Expected 'ptbxl', 'arrhythmia', 'ltdb', 'tdbrain', 'ptb_diagnostic' or 'eegmmidb'.")
 
     # print(f"Will take {n} points from indices: {ref_index}")
 
@@ -289,11 +293,19 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
         elif dataset == "tdbrain":
             raw = mne.io.read_raw_brainvision(file, preload=True, verbose=False)
             signal = raw.get_data(picks=0)[0].astype(np.float64)
+        elif dataset == "ptb_diagnostic":
+            # Resample to 100 Hz to match the fs=100 assumption in extract_ecg_features
+            # below (native PTB-diagnostic rate is 1000 Hz).
+            signal = ptb_diagnostic_loader([file], dest_hz=100, one_per_patient=True)[0]
+        elif dataset == "eegmmidb":
+            signal = eegmmidb_loader([file])[0]
 
         ref_attacker_person = [normalize(signal[index:index + n]) for index in ref_index]
         if using_features:
             if dataset == "tdbrain":
                 ts_ref_features = [extract_eeg_features(ts_ref, fs=500) for ts_ref in ref_attacker_person]
+            elif dataset == "eegmmidb":
+                ts_ref_features = [extract_eeg_features(ts_ref, fs=SOURCE_HZ["eegmmidb"]) for ts_ref in ref_attacker_person]
             else:
                 ts_ref_features = [extract_ecg_features(ts_ref, fs=100) for ts_ref in ref_attacker_person]
             if len(feature_keys) == 0:
@@ -335,7 +347,7 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
     # Load reconstructed time series from result subfolders
     ts_inverse = []
 
-    if dataset == "tdbrain":
+    if dataset in ("tdbrain", "eegmmidb"):
         result_folders = sorted(
             [d for d in os.listdir(base_folder_test) if os.path.isdir(os.path.join(base_folder_test, d)) and re.fullmatch(r"eeg_\d+", d)],
             key=lambda d: int(d.split("eeg_")[1])
@@ -352,12 +364,15 @@ def conformal_prediction(n, m, base_folder_test, dataset, ref_index=[0], using_f
         with open(result_path, "r") as f:
             res = json.load(f)
             if dataset == "tdbrain":
-                ts_inv = normalize(np.array(res["smoothed"]))
+                # ts_inv = normalize(np.array(res["smoothed"]))
+                ts_inv = normalize(np.array(res["solutions"][0]))
             else:
                 ts_inv = normalize(np.array(res["solutions"][0]))
         if using_features:
             if dataset == "tdbrain":
                 ts_inv_features = extract_eeg_features(ts_inv, fs=500)
+            elif dataset == "eegmmidb":
+                ts_inv_features = extract_eeg_features(ts_inv, fs=SOURCE_HZ["eegmmidb"])
             else:
                 ts_inv_features = extract_ecg_features(ts_inv, fs=100)
             if len(feature_keys) == 0:
@@ -435,11 +450,12 @@ if __name__ == "__main__":
     # DeepMP
     parser = argparse.ArgumentParser()
     parser.add_argument("--category", type=str, default="ecg", help="Dataset category")
-    parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset", choices=["arrhythmia", "ptbxl", "ltdb", "tdbrain"])
+    parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset", choices=["arrhythmia", "ptbxl", "ltdb", "tdbrain", "ptb_diagnostic", "eegmmidb"])
     parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
 
     args = parser.parse_args()
     dataset = args.dataset
+    category = "eeg" if dataset in ("tdbrain", "eegmmidb") else "ecg"   # result folders are named {category}_{k}
 
     if not args.ipopt:
         if dataset == "arrhythmia":
@@ -448,35 +464,44 @@ if __name__ == "__main__":
             base_test_folder = "src/results/baseline/ptbxl/ptbxl/"
         elif dataset == "ltdb":
             base_test_folder = "test/results/baseline/ptbxl/ltdb/"
-        elif dataset == "tbbrain":
-            base_test_folder = "src/results/baseline/eeg/tdbrain/"
+        elif dataset == "tdbrain":
+            base_test_folder = "src/results/baseline/eeg_160hz/tdbrain/"
+        elif dataset == "ptb_diagnostic":
+            base_test_folder = "src/results/baseline/ptbxl/ptb_diagnostic/"
+        elif dataset == "eegmmidb":
+            base_test_folder = "src/results/baseline/eeg_160hz/eegmmidb/"
         else:
             raise ValueError(f"Unknown dataset {args.dataset}")
     else:
         if dataset == "arrhythmia":
-            base_test_folder = "src/results/ipopt/arrhythmia/"
+            base_test_folder = "src/results/baseline/arrhythmia_baseline/"
+            # base_test_folder = "src/results/ipopt/arrhythmia/"
         elif dataset == "ptbxl":
             base_test_folder = "src/results/ipopt/ptbxl/"
         elif dataset == "ltdb":
             base_test_folder = "src/results/ipopt/ltdb/"
         elif dataset == "tdbrain":
-            base_test_folder = "src/results/ipopt/eeg/tdbrain/"
+            base_test_folder = "src/results/ipopt/eeg_160hz/"
+        elif dataset == "ptb_diagnostic":
+            base_test_folder = "src/results/ipopt/ptb_diagnostic/"
+        elif dataset == "eegmmidb":
+            base_test_folder = "src/results/ipopt/eegmmidb/"
         else:
             raise ValueError(f"Unknown dataset {args.dataset}")
     
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"PCC mean : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=0.7, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"PCC 0.7 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, pearson_correlation, m=20, epsilon=None, stat="max", dataset=category, ipopt=args.ipopt)
     print(f"PCC max : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, partial_pearson_correlation, m=20, epsilon=0.7, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"Partial PCC 0.7 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"RMSE : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=0.1, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"RMSE 0.1 : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, rmse_inv_check, m=20, epsilon=None, stat="min", dataset=category, ipopt=args.ipopt)
     print(f"RMSE min : {loss_test}")
-    loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean", ipopt=args.ipopt)
+    loss_test = compute_loss_from_folder(base_test_folder, partial_rmse, m=20, epsilon=0.1, stat="mean", dataset=category, ipopt=args.ipopt)
     print(f"Partial RMSE 0.1 : {loss_test}")

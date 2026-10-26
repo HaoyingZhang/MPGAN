@@ -1,6 +1,7 @@
 import numpy as np
 import os, json
 import math
+import warnings
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -12,6 +13,7 @@ import wfdb
 from src.utils_matrix_profile import normalize
 
 from sklearn.svm import SVC
+from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.neighbors import KNeighborsClassifier
@@ -31,15 +33,35 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.base import BaseEstimator, ClassifierMixin
 import joblib
-from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader
+from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader, ptb_diagnostic_loader, ptb_diagnostic_records_per_patient, eegmmidb_loader, eegmmidb_subjects
 import argparse
 from numpy.lib.stride_tricks import sliding_window_view
 ## GLOBAL VARIABLES
 
-DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader,"arrhythmia": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
-LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia_xl": np.arange(48), "arrhythmia": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
-SOURCE_HZ = {"ptbxl": 100, "arrhythmia_xl": 100, "arrhythmia": 100, "ltdb": 100, "tdbrain": 500}
+DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia_xl": arrhythmia_loader,"arrhythmia": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader, "ptb_diagnostic": ptb_diagnostic_loader, "eegmmidb": eegmmidb_loader}
+LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia_xl": np.arange(48), "arrhythmia": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200), "ptb_diagnostic": np.arange(len(ptb_diagnostic_records_per_patient())), "eegmmidb": np.arange(len(eegmmidb_subjects()))}
+SOURCE_HZ = {"ptbxl": 100, "arrhythmia_xl": 100, "arrhythmia": 100, "ltdb": 100, "tdbrain": 500, "ptb_diagnostic": 1000, "eegmmidb": 160}
 SESSION_EEG = "EC"
+# Sampling rate of the EEG reconstructions (src/results/ipopt/eeg_160hz); reference
+# windows are resampled to it and EEG features are extracted with it.
+FREQUENCY_EEG = 160
+# EEG feature extractor: extract_eeg_features (original set) or extract_eeg_features_bis
+# (set selected on the IPOPT reconstructions, see eeg_feature_test.py)
+EXTRACT_EEG_FEATURES = extract_eeg_features_bis
+# ptb_diagnostic test folders (src/results/ipopt/ptb_diagnostic) were built from the
+# window [500:1000] of each patient's first record (see test/eval.py). 
+# Index 2000 is used since even the shortest record (32000 samples @ 1000 Hz -> 3200 @
+# 100 Hz) still has room for a full 500-point window starting there.
+# [0, 1000, 1500, 2000]
+PTB_DIAGNOSTIC_REFERENCE_INDEX = [2000]
+
+def eeg_features(ts, robust=False):
+    """Extract EEG features with EXTRACT_EEG_FEATURES at FREQUENCY_EEG."""
+    ts = np.asarray(ts, dtype=np.float64)
+    if EXTRACT_EEG_FEATURES is extract_eeg_features:
+        return extract_eeg_features(ts, fs=FREQUENCY_EEG, robust=robust)
+    return EXTRACT_EEG_FEATURES(ts, fs=FREQUENCY_EEG)
+
 
 class _TransformerNet(nn.Module):
     def __init__(self, seq_len, n_classes, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1):
@@ -82,6 +104,24 @@ class _CNNNet(nn.Module):
         x = self.conv(x.unsqueeze(1))   # (B, C, L)
         x = x.mean(dim=-1)              # global average pool
         return self.head(self.drop(x))
+
+
+class _LSTMNet(nn.Module):
+    def __init__(self, n_classes, hidden_dim=64, num_layers=2, bidirectional=True, dropout=0.3):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=1, hidden_size=hidden_dim, num_layers=num_layers,
+            batch_first=True, bidirectional=bidirectional,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        out_dim = hidden_dim * (2 if bidirectional else 1)
+        self.drop = nn.Dropout(dropout)
+        self.head = nn.Linear(out_dim, n_classes)
+
+    def forward(self, x):
+        out, _ = self.lstm(x.unsqueeze(-1))   # (B, L, H*dir)
+        last = out[:, -1, :]                  # final timestep
+        return self.head(self.drop(last))
 
 
 class TimeSeriesCNNClassifier(BaseEstimator, ClassifierMixin):
@@ -162,6 +202,55 @@ class TimeSeriesTransformerClassifier(BaseEstimator, ClassifierMixin):
         self.model_.train()
         for i in range(self.epochs):
             print(f"Epoch {i+1}/{self.epochs}")
+            for xb, yb in loader:
+                xb, yb = xb.to(self.device), yb.to(self.device)
+                optimizer.zero_grad()
+                criterion(self.model_(xb), yb).backward()
+                optimizer.step()
+        return self
+
+    def predict(self, X):
+        self.model_.eval()
+        with torch.no_grad():
+            logits = self.model_(torch.tensor(X, dtype=torch.float32).to(self.device))
+        return logits.argmax(dim=1).cpu().numpy()
+
+    def predict_proba(self, X):
+        self.model_.eval()
+        with torch.no_grad():
+            logits = self.model_(torch.tensor(X, dtype=torch.float32).to(self.device))
+        return torch.softmax(logits, dim=1).cpu().numpy()
+
+
+class TimeSeriesLSTMClassifier(BaseEstimator, ClassifierMixin):
+    """Sklearn-compatible (Bi)LSTM classifier for raw time series."""
+
+    def __init__(self, hidden_dim=64, num_layers=2, bidirectional=True, dropout=0.3,
+                 epochs=50, batch_size=16, lr=1e-3, device=None):
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.dropout = dropout
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.lr = lr
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        n_classes = len(self.classes_)
+        self.model_ = _LSTMNet(n_classes, self.hidden_dim, self.num_layers,
+                                self.bidirectional, self.dropout).to(self.device)
+        loader = DataLoader(
+            TensorDataset(torch.tensor(X, dtype=torch.float32),
+                          torch.tensor(y, dtype=torch.long)),
+            batch_size=self.batch_size, shuffle=True,
+        )
+        optimizer = torch.optim.Adam(self.model_.parameters(), lr=self.lr)
+        criterion = nn.CrossEntropyLoss()
+        self.model_.train()
+        for epoch in range(self.epochs):
+            print(f"Epoch {epoch+1}/{self.epochs}")
             for xb, yb in loader:
                 xb, yb = xb.to(self.device), yb.to(self.device)
                 optimizer.zero_grad()
@@ -448,7 +537,7 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using
     """
     if classifier is None:
         print("No classifier is passed, using SVM")
-        classifier = SVC(kernel='rbf', C=10, gamma='scale', probability=True)
+        classifier = SVC(kernel='rbf', C=1000, gamma=0.1, probability=True)
     if using_feature:
         print("Using features extraction")
     else:
@@ -463,7 +552,7 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using
                 if category == "ecg":
                     feats = extract_ecg_features(np.asarray(ts, dtype=np.float64), fs=fs)
                 elif category == "eeg":
-                    feats = extract_eeg_features(np.asarray(ts, dtype=np.float64), fs=fs, robust=robust_features)
+                    feats = eeg_features(ts, robust=robust_features)
                 if feature_keys is None:
                     feature_keys = list(feats.keys())
                 X_rows.append([feats[k] for k in feature_keys])
@@ -490,7 +579,16 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using
 
     pipeline = Pipeline([('scaler', StandardScaler()), ('classifier', classifier)])
     print(X.shape, y.shape)
-    pipeline.fit(X, y)
+    with warnings.catch_warnings():
+        # Each class here is one person with very few reference samples, so CV test
+        # folds always have close to as many unique classes as samples — sklearn's
+        # type_of_target() misreads that as "looks like regression", not a real issue.
+        warnings.filterwarnings(
+            "ignore",
+            message="The number of unique classes is greater than 50%.*",
+            category=UserWarning,
+        )
+        pipeline.fit(X, y)
 
     return pipeline, feature_keys, {'X': X, 'y': y}
 
@@ -500,18 +598,53 @@ def reidentification_attack(base_root, n = 500,
                             classifier="svm", use_feature=True, 
                             use_original=False, distance=False, 
                             metric="dtw", verbose=True, 
-                            resample_hz=None, plot=False, 
-                            robust_features=False, n_features=None):
+                            resample_hz=None, plot=False,
+                            robust_features=False, n_features=None, ts_key=None):
+    """ts_key: key of results.json holding the attacked series (e.g. "reconstruct");
+    default "solutions"[0] with ipopt, else "fake_data"."""
     print(f"Evaluating database {dataset} under base root {base_root}")
 
-    REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
+    # REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
+    # REFERENCE_INDICES = np.arange(0, 8000, step=n) if dataset == "tdbrain"else [0]
+    # indices in the training set are [500,5000]
+    if dataset == "ptb_diagnostic":
+        # Single reference window, deliberately not [500:1000] (see PTB_DIAGNOSTIC_REFERENCE_INDEX).
+        REFERENCE_INDICES = PTB_DIAGNOSTIC_REFERENCE_INDEX
+    else:
+        if dataset == "ptbxl":
+            REFERENCE_INDICES = [0]
+        else:
+            REFERENCE_INDICES = [5000]
+            # REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [2500]
+            # REFERENCE_INDICES = np.arange(1000, 7500, step=n) if dataset == "tdbrain" else [2500]
+
+    # ptb_diagnostic test folders are named after the patient's position in
+    # LIST_PEOPLE["ptb_diagnostic"], but not every patient has a folder (the ipopt
+    # solve did not complete for all of them). Scan the test folder up front so the
+    # attacker's training set can be restricted to exactly those patients, instead of
+    # loading/training on identities that never show up in the test set.
+    if not use_original:
+        test_dirs = sorted(
+            [os.path.join(base_root, d) for d in os.listdir(base_root)
+             if d.startswith(f"{category}_") and d.split("_")[1].isdigit()],
+            key=lambda x: int(os.path.basename(x).split("_")[1]),
+        )
+        patient_ids = [int(os.path.basename(d).split("_")[1]) for d in test_dirs]
+
+    people_ids = LIST_PEOPLE[dataset]
+    if dataset == "ptb_diagnostic" and not use_original:
+        people_ids = np.array(patient_ids)
 
     frequency = SOURCE_HZ[dataset] if resample_hz is None else resample_hz
     if dataset == "tdbrain":
-        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency, session=SESSION_EEG)
+        if resample_hz is None:
+            frequency = FREQUENCY_EEG
+        all_ts = DATA_LOADERS[dataset](people_ids, dest_hz=frequency, session=SESSION_EEG)
+    elif dataset == "ptb_diagnostic":
+        all_ts = DATA_LOADERS[dataset](people_ids, dest_hz=frequency, one_per_patient=True)
     else:
-        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency)
-    
+        all_ts = DATA_LOADERS[dataset](people_ids, dest_hz=frequency)
+
     # Build train set: Loade attacker reference TS
     ref_attacker = []
     ids = []
@@ -547,25 +680,21 @@ def reidentification_attack(base_root, n = 500,
                 ts = normalize(ts)
                 ts_raw_test.append(ts)
     else:
-        test_dirs = sorted(
-            [os.path.join(base_root, d) for d in os.listdir(base_root)
-             if d.startswith(f"{category}_") and d.split("_")[1].isdigit()],
-            key=lambda x: int(os.path.basename(x).split("_")[1]),
-        )
-        ids = np.arange(len(test_dirs))
-        print(f"{ids} time series detected")
-    
+        # test_dirs / patient_ids already scanned above, before building the training set.
         for ecg_dir in test_dirs:
             json_path = os.path.join(ecg_dir, "results.json")
             if not os.path.exists(json_path):
                 print(f"FATAL: {ecg_dir} not found !")
-                return 
+                return
             with open(json_path) as f:
                 data = json.load(f)
-            if ipopt:
+            if ts_key is not None:
+                ts = np.array(data[ts_key], dtype=np.float64)
+            elif ipopt:
                 if dataset == "tdbrain":
-                    ts = np.array(data["smoothed"], dtype=np.float64)
-                    # ts = np.array(data["solutions"][0], dtype=np.float64)
+                    # ts = np.array(data["smoothed"], dtype=np.float64)
+                    ts = np.array(data["solutions"][0], dtype=np.float64)
+                    # ts = np.array(data["time_series"], dtype=np.float64)
                 else:
                     ts = np.array(data["solutions"][0], dtype=np.float64)
             else:
@@ -576,16 +705,19 @@ def reidentification_attack(base_root, n = 500,
                 mp = stumpy.stump(np.array(ts, dtype=np.float64), m=100)
                 ts = mp[:, 0]
             ts_raw_test.append(ts)
-        
+
 
     # Assign ground-truth label
     if dataset in ("arrhythmia_xl", "arrhythmia"):
         labels = [int(id/5) for id in range(len(ts_raw_test))]
-    elif dataset in ("ptbxl", "tdbrain"):
-        labels = ids  
+    elif dataset in ("ptbxl", "tdbrain", "ptb_diagnostic", "eegmmidb"):
+        labels = ids
     elif dataset == "ltdb":
-        labels = [int(id/20) for id in range(len(ts_raw_test))]
-    
+        if use_original:
+            labels = ids
+        else:
+            labels = [int(id / (len(ts_raw_test) // len(people_ids))) for id in range(len(ts_raw_test))]
+
     # Training the classifier
     accuracy = 0
 
@@ -595,17 +727,36 @@ def reidentification_attack(base_root, n = 500,
         if classifier == "knn":
             clf = KNeighborsClassifier(n_neighbors=31, metric="minkowski", weights="distance")
         elif classifier == "svm":
-            clf = SVC(kernel='rbf', C=10, gamma='scale', probability=True, random_state=42)
+            n_ref_per_person = len(REFERENCE_INDICES)
+            if n_ref_per_person >= 2:
+                # Tune C/gamma per run via stratified CV instead of a fixed guess —
+                # only feasible because every person has >=2 reference samples here.
+                cv_folds = min(5, n_ref_per_person)
+                clf = GridSearchCV(
+                    SVC(kernel='rbf', probability=True, random_state=42),
+                    param_grid={
+                        "C": [0.1, 1, 10, 100, 1000],
+                        "gamma": ["scale", "auto", 0.001, 0.01, 0.1],
+                    },
+                    cv=cv_folds,
+                    scoring="accuracy",
+                    n_jobs=-1,
+                )
+            else:
+                print("Only 1 reference sample per person — cannot cross-validate, using fixed SVM params")
+                clf = SVC(kernel='rbf', C=1000, gamma='auto', probability=True, random_state=42)
         elif classifier == "rf":
             clf = RandomForestClassifier(max_features="log2", max_depth=10, min_samples_leaf=5, n_estimators=300, random_state=42)
         elif classifier == "cnn":
             clf = TimeSeriesCNNClassifier()
         elif classifier == "transformer":
             clf = TimeSeriesTransformerClassifier()
+        elif classifier == "lstm":
+            clf = TimeSeriesLSTMClassifier(epochs=10)
         elif classifier == "xgb":
             clf = XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=4, min_child_weight=5, subsample=0.8, eval_metric="mlogloss", verbosity=0, random_state=42, seed=42)
 
-        train_fs = 500 if category == "eeg" else 100
+        train_fs = FREQUENCY_EEG if category == "eeg" else 100
         
         pipeline, feature_keys, metadata = train_reidentification_classifier(
             ref_attacker, fs=train_fs, classifier=clf, using_feature=use_feature, category=category,
@@ -613,6 +764,8 @@ def reidentification_attack(base_root, n = 500,
         )
 
         print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects")
+        if isinstance(clf, GridSearchCV):
+            print(f"Best params: {clf.best_params_} (CV accuracy: {clf.best_score_:.4f})")
 
         # Build test feature matrix now that feature_keys is known
         X_test_rows = []
@@ -621,7 +774,7 @@ def reidentification_attack(base_root, n = 500,
                 if category == "ecg":
                     feats = extract_ecg_features(ts, fs=100)
                 elif category == "eeg":
-                    feats = extract_eeg_features(ts, fs=500, robust=robust_features)
+                    feats = eeg_features(ts, robust=robust_features)
                 X_test_rows.append([feats[k] for k in feature_keys])
             else:
                 X_test_rows.append(ts)
@@ -661,7 +814,7 @@ def reidentification_attack(base_root, n = 500,
                     if category == "ecg":
                         feats_neg = extract_ecg_features(normalize(-ts), fs=100)
                     elif category == "eeg":
-                        feats_neg = extract_eeg_features(normalize(-ts), fs=500, robust=robust_features)
+                        feats_neg = eeg_features(normalize(-ts), robust=robust_features)
                     X_test_neg_rows.append([feats_neg[k] for k in feature_keys])
                 else:
                     X_test_neg_rows.append(-ts)
@@ -686,12 +839,15 @@ def reidentification_attack(base_root, n = 500,
                 for i, ptb_id in enumerate(test_labels):
                     hit = "✓" if hit_mask[i] else "✗"
                     if hit_mask[i]:
-                        print(f"#{i} (class {ptb_id:3d})  → predicted #{y_pred[i]} / {y_pred_neg[i]}  {hit}")
+                        if dataset == "ptb_diagnostic":
+                            print(f"#{i} (class {patient_ids[ptb_id]})  → predicted #{patient_ids[y_pred[i]]} / {patient_ids[y_pred_neg[i]]}  {hit}")
+                        else:
+                            print(f"#{i} (class {ptb_id})  → predicted #{y_pred[i]} / {y_pred_neg[i]}  {hit}")
             accuracy = accuracy
 
     # Using distance method
     else:
-        fs_dist = 500 if category == "eeg" else 100
+        fs_dist = FREQUENCY_EEG if category == "eeg" else 100
 
         if use_feature:
             # Extract features from every reference segment, then fit a cross-patient
@@ -701,7 +857,7 @@ def reidentification_attack(base_root, n = 500,
             for ts_person_segs in ref_attacker:
                 person_vecs = []
                 for seg in ts_person_segs:
-                    f = extract_eeg_features(seg, fs=fs_dist, robust=robust_features) if category == "eeg" else extract_ecg_features(seg, fs=fs_dist)
+                    f = eeg_features(seg, robust=robust_features) if category == "eeg" else extract_ecg_features(seg, fs=fs_dist)
                     if dist_feature_keys is None:
                         dist_feature_keys = list(f.keys())
                     person_vecs.append(np.array([f[k] for k in dist_feature_keys], dtype=np.float64))
@@ -721,7 +877,7 @@ def reidentification_attack(base_root, n = 500,
             ]
 
             def _feat_vec(ts):
-                f = extract_eeg_features(ts, fs=fs_dist, robust=robust_features) if category == "eeg" else extract_ecg_features(ts, fs=fs_dist)
+                f = eeg_features(ts, robust=robust_features) if category == "eeg" else extract_ecg_features(ts, fs=fs_dist)
                 v = np.array([f[k] for k in dist_feature_keys], dtype=np.float64)
                 v[~np.isfinite(v)] = 0.0
                 return scaler_dist.transform(v.reshape(1, -1)).flatten()
@@ -809,7 +965,8 @@ def reidentification_attack_pets(base_root, n=500,
                                   resample_hz=None, plot=False,
                                   robust_features=False, n_features=None):
     print(f"Evaluating database {dataset} under base root {base_root} (PETS window method)")
-
+    
+    # REFERENCE_INDICES = [5000]
     REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
 
     frequency = SOURCE_HZ[dataset] if resample_hz is None else resample_hz
@@ -869,7 +1026,7 @@ def reidentification_attack_pets(base_root, n=500,
     elif dataset in ("ptbxl", "tdbrain"):
         labels = list(ids)
     elif dataset == "ltdb":
-        labels = [int(id/20) for id in ids]
+        labels = [int(id/30) for id in ids]
 
     test_labels = np.array(labels, dtype=np.int64)
 
@@ -981,7 +1138,7 @@ if __name__ == "__main__":
     parser.add_argument("--category", type=str, default="ecg", help="Dataset category")
     parser.add_argument("--dataset", type=str, default="ptbxl", help="Evaluate on dataset")
     parser.add_argument("--ipopt", action="store_true", help="Use solution after ipopt")
-    parser.add_argument("--classifier", type=str, default="svm", choices=["svm", "knn", "rf", "cnn", "transformer", "xgb"], help="The type of classifier used")
+    parser.add_argument("--classifier", type=str, default="svm", choices=["svm", "knn", "rf", "cnn", "transformer", "lstm", "xgb"], help="The type of classifier used")
     parser.add_argument("--feature", action="store_true", help="Using feature extraction")
     parser.add_argument("--distance", action="store_true", help="Reidentify via nearest-neighbour distance instead of a classifier")
     parser.add_argument("--metric", type=str, default="euclidean", choices=["euclidean", "dtw", "pcc", "eeg"], help="Distance metric for --distance mode (eeg = band-power + IAF feature space, recommended for single-channel EEG)")
@@ -1010,7 +1167,11 @@ if __name__ == "__main__":
         elif args.dataset == "ltdb":
             base_root = "src/results/ipopt/ltdb/"
         elif args.dataset == "tdbrain":
-            base_root = "src/results/ipopt/eeg/"
+            base_root = "src/results/ipopt/eeg_160hz/"
+        elif args.dataset == "ptb_diagnostic":
+            base_root = "src/results/ipopt/ptb_diagnostic/"
+        elif args.dataset == "eegmmidb":
+            base_root = "src/results/ipopt/eegmmidb/"
     else:
         if args.dataset == "arrhythmia":
             base_root = "test/results/ecg_arrhythmia/"
@@ -1018,10 +1179,14 @@ if __name__ == "__main__":
             base_root = "src/results/baseline/ptbxl/ptbxl/"
         elif args.dataset == "arrhythmia_xl":
             base_root = "test/results/ecg_arrhythmia_xl/"
+        elif args.dataset == "ptb_diagnostic":
+            base_root = "src/results/baseline/ptbxl/ptb_diagnostic/"
         elif args.dataset == "ltdb":
             base_root = "test/results/ecg_ltdb_100/"
         elif args.dataset == "tdbrain":
             base_root = "src/results/baseline/eeg/tdbrain/"
+        elif args.dataset == "eegmmidb":
+            base_root = "src/results/baseline/eeg_160hz/eegmmidb/"
             # base_root = "src/results/ipopt/eeg/"
 
     # if args.original and args.dataset == "tdbrain":

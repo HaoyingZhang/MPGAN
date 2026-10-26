@@ -5,6 +5,7 @@ from scipy.stats import wasserstein_distance, kurtosis
 from tslearn.metrics import dtw
 from scipy.signal import find_peaks
 from scipy.signal import welch as scipy_welch
+from scipy.optimize import linear_sum_assignment
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))  # Add root directory to path
 
@@ -117,18 +118,121 @@ def rmse(list_1, list_2):
     return np.sqrt(np.mean((list_1  - list_2) ** 2))
 
 def mpi_distance(mpi_orig, mpi_pert):
-    # n = len(mpi_orig)
-    # positions = np.arange(n)
+    n = len(mpi_orig)
+    positions = np.arange(n)
 
-    # orig_weights = np.bincount(mpi_orig, minlength=n) / n
-    # pert_weights = np.bincount(mpi_pert, minlength=n) / n
+    orig_weights = np.bincount(mpi_orig, minlength=n) / n
+    pert_weights = np.bincount(mpi_pert, minlength=n) / n
 
-    # emd = wasserstein_distance(positions, positions, orig_weights, pert_weights)
-    emd = rmse(mpi_orig, mpi_pert)
-    return emd
+    emd = wasserstein_distance(positions, positions, orig_weights, pert_weights)
+    return {"emd": emd, "rmse": rmse(mpi_orig, mpi_pert)}
 
 def mpd_distance(mpd_orig, mpd_pert):
-    return 1-pearson_correlation(mpd_orig, mpd_pert)
+    return {"pcc": 1-pearson_correlation(mpd_orig, mpd_pert)}
+
+# ------------------------------------------------------------------ #
+# Peak-based utility metrics on the released MP                       #
+# P, I: original MPD / MPI; P_rel, I_rel: released (noisy) MPD / MPI  #
+# m: subsequence length; excl: exclusion zone (default m // 2);       #
+# delta: position tolerance (default excl)                            #
+# ------------------------------------------------------------------ #
+
+def extract_peaks(P, k, m, excl=None, kind="min"):
+    """Top-k peak positions, greedily: take the extreme value, mask +-excl around it, repeat.
+    kind="min" gives motifs, kind="max" gives discords."""
+    excl = m // 2 if excl is None else excl
+    P = np.asarray(P, dtype=np.float64)
+    score = P.copy() if kind == "min" else -P
+    peaks = []
+    for _ in range(k):
+        i = int(np.argmin(score))
+        if not np.isfinite(score[i]):  # every position already masked
+            break
+        peaks.append(i)
+        score[max(0, i - excl):i + excl + 1] = np.inf
+    return np.array(peaks, dtype=int)
+
+
+def match_peaks(orig_peaks, rel_peaks, delta):
+    """One-to-one Hungarian matching on position distance; keep pairs within delta.
+    Returns a list of (original position, released position)."""
+    if len(orig_peaks) == 0 or len(rel_peaks) == 0:
+        return []
+    cost = np.abs(orig_peaks[:, None] - rel_peaks[None, :])
+    rows, cols = linear_sum_assignment(cost)
+    return [(int(orig_peaks[r]), int(rel_peaks[c])) for r, c in zip(rows, cols) if cost[r, c] <= delta]
+
+
+def motif_recall_at_k(P, P_rel, k, m, excl=None, delta=None):
+    """Fraction of original top-k motif positions with a matched released motif within delta."""
+    excl = m // 2 if excl is None else excl
+    delta = excl if delta is None else delta
+    orig = extract_peaks(P, k, m, excl, "min")
+    if len(orig) == 0:
+        return np.nan
+    return len(match_peaks(orig, extract_peaks(P_rel, k, m, excl, "min"), delta)) / len(orig)
+
+
+def motif_pair_accuracy_at_k(P, I, P_rel, I_rel, k, m, excl=None, delta=None):
+    """Among matched motifs at original position i, fraction with |I_rel[i] - I[i]| <= delta
+    (the motif still points to its partner). NaN if no motif is matched."""
+    excl = m // 2 if excl is None else excl
+    delta = excl if delta is None else delta
+    matches = match_peaks(extract_peaks(P, k, m, excl, "min"), extract_peaks(P_rel, k, m, excl, "min"), delta)
+    if not matches:
+        return np.nan
+    I, I_rel = np.asarray(I), np.asarray(I_rel)
+    return float(np.mean([abs(I_rel[i] - I[i]) <= delta for i, _ in matches]))
+
+
+def top1_motif_hit(P, I, P_rel, I_rel, m, excl=None, delta=None):
+    """1 if the best motif pair survives: the released top-1 motif and its pointer land within
+    delta of the original pair (i, I[i]), in either order; else 0."""
+    excl = m // 2 if excl is None else excl
+    delta = excl if delta is None else delta
+    o, r = extract_peaks(P, 1, m, excl, "min"), extract_peaks(P_rel, 1, m, excl, "min")
+    if len(o) == 0 or len(r) == 0:
+        return 0.0
+    a, b = o[0], int(I[o[0]])
+    c, d = r[0], int(I_rel[r[0]])
+    same = abs(c - a) <= delta and abs(d - b) <= delta
+    swapped = abs(c - b) <= delta and abs(d - a) <= delta
+    return float(same or swapped)
+
+
+def discord_recall_at_k(P, P_rel, k, m, excl=None, delta=None):
+    """Fraction of original top-k discord positions with a matched released discord within delta.
+    No MPI fidelity for discords: a discord's nearest neighbour is not meaningful."""
+    excl = m // 2 if excl is None else excl
+    delta = excl if delta is None else delta
+    orig = extract_peaks(P, k, m, excl, "max")
+    if len(orig) == 0:
+        return np.nan
+    return len(match_peaks(orig, extract_peaks(P_rel, k, m, excl, "max"), delta)) / len(orig)
+
+
+def discord_anomaly_hit(P_rel, anomaly_start, anomaly_end, m, excl=None, tol=None):
+    """UCR-style scoring on labeled data: 1 if the top-1 discord of the released MP falls in
+    [anomaly_start - tol, anomaly_end + tol], else 0."""
+    excl = m // 2 if excl is None else excl
+    tol = excl if tol is None else tol
+    top = extract_peaks(P_rel, 1, m, excl, "max")
+    return float(len(top) > 0 and anomaly_start - tol <= top[0] <= anomaly_end + tol)
+
+
+def mp_utility_metrics_motif(P, I, P_rel, I_rel, m, k=3, excl=None, delta=None):
+    """All label-free peak metrics for one (original, released) MP pair."""
+    return {
+        f"motif_recall@{k}": motif_recall_at_k(P, P_rel, k, m, excl, delta),
+        f"motif_pair_acc@{k}": motif_pair_accuracy_at_k(P, I, P_rel, I_rel, k, m, excl, delta),
+        "top1_motif_hit": top1_motif_hit(P, I, P_rel, I_rel, m, excl, delta)
+    }
+
+def mp_utility_metrics_discord(P, P_rel, m, k=3, excl=None, delta=None):
+    """All label-free peak metrics for one (original, released) MP pair."""
+    return {
+        f"discord_recall@{k}": discord_recall_at_k(P, P_rel, k, m, excl, delta),
+    }
 
 def detection_peak(ts_original, ts_reconstructed, threshold=None):
     fs = 100

@@ -1,6 +1,6 @@
 gans_venv/
 src/results/
-test/
+test/results/
 *.json
 *.png
 colab/
@@ -9,3 +9,7 @@ optuna_ckpts/
 data/
 .venv
 exe.sh
+outputs/
+eval.ipynb
+eval.py
+*.dat

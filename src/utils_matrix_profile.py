@@ -103,25 +103,43 @@ def MP_compute_single(
                 embedding=False,
                 fill_value = 100.0,
                 perturb = None,
-                epsilon = 100
+                epsilon = 100,
+                epsilon_mpi = None,
+                epsilon_mpd = None,
+                return_mp = False
             ):
+    """
+    If return_mp, also return the real and the (possibly) perturbed MP, each of
+    shape (L, 2) with columns [mpd, mpi].
+    """
+    # Per-component budgets fall back to the shared epsilon
+    epsilon_mpi = epsilon if epsilon_mpi is None else epsilon_mpi
+    epsilon_mpd = epsilon if epsilon_mpd is None else epsilon_mpd
     ts = np.array(ts, dtype=np.float64)
 
     profile = stumpy.stump(ts, m=m, normalize=znorm)
-    distance_utility = 0
+    distance_utility = {}
     if norm:
         mpd, mpi = normalized_MP(profile)
+        mp_real = np.stack([mpd, mpi], axis=1).astype(np.float64)
     else:
         mpd = profile[:, 0].astype(np.float32)
         mpi = profile[:, 1].astype(int)
+        mp_real = np.stack([mpd, mpi], axis=1).astype(np.float64)
         if perturb == "mpi":
-            # print(f"Evaluating robustness with Perturbation in MPI with epsilon = {epsilon}")
-            mpi_pert = perturb_mpi(mpi, epsilon_global=epsilon)
+            # print(f"Evaluating robustness with Perturbation in MPI with epsilon = {epsilon_mpi}")
+            mpi_pert = perturb_mpi(mpi, epsilon_global=epsilon_mpi)
             distance_utility = mpi_distance(mpi, mpi_pert)
             mpi = mpi_pert
         elif perturb == "mpd":
-            mpd_pert = perturb_mpd(mpd, epsilon_global=epsilon)
+            mpd_pert = perturb_mpd(mpd, epsilon_global=epsilon_mpd)
             distance_utility = mpd_distance(mpd, mpd_pert)
+            mpd = mpd_pert
+        elif perturb == "both":
+            mpi_pert = perturb_mpi(mpi, epsilon_global=epsilon_mpi)
+            mpd_pert = perturb_mpd(mpd, epsilon_global=epsilon_mpd)
+            distance_utility = {**mpd_distance(mpd, mpd_pert), **mpi_distance(mpi, mpi_pert)}
+            mpi = mpi_pert
             mpd = mpd_pert
 
     if not mpd_only:
@@ -131,6 +149,9 @@ def MP_compute_single(
             line = [[mpd[i], mpi[i]] for i in range(len(mpd))]
     else:
         line = blockify_mp_unit(mpd)
+    if return_mp:
+        mp_pert = np.stack([mpd, mpi], axis=1).astype(np.float64)
+        return line, distance_utility, mp_real, mp_pert
     return line, distance_utility
 
 def MP_compute_recursive(ts_data, m, norm=False, mpd_only=False, znorm=True, embedding=False):

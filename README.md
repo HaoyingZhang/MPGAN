@@ -140,4 +140,20 @@ Use "arrhythmia" and "ptbxl" as [dataset] for ecg data and "tdbrain" as [dataset
 python3 src/plot/plot_paper.py --exp_name robustness
 ```
 
+## Choice of the re-identification instrument
+We benchmark several re-identification mechanisms: random guessing, distance-based matching (e.g., Dynamic Time Warping), and feature-based classification with generic features extracted with [TSFresh](https://tsfresh.readthedocs.io/en/latest/) and with ECG-specific features present in our paper, each applied to three signal representations: the MP directly, time series reconstructed by DeepMP, and those refined by the solver. 
+The results are shown below. Using the MP directly yields the lowest re-identification rate with all mechanisms, confirming that reconstruction is necessary to measure the leakage. 
+Generic TSFresh features are less effective than the proposed features, despite numbering more than 700, due to their lack of ECG-specific discriminative information. 
+With the domain-specific features, the refinement provided by the solver further improves the attack from 4.5\% to 12.5\% by improving feature reconstruction. **Classification using ECG-specific features extracted from solver-refined reconstructions yields the highest re-identification rate**, and is the instrument used in the rest of the audit. 
+
+**Table: Re-identification rate on PTB-XL for each re-identification method, depending on the data available to the adversary.**
+
+| Re-identification method | MP | DeepMP | DeepMP + Solv. |
+|---|:---:|:---:|:---:|
+| Random guessing | 0.5% | 0.5% | 0.5% |
+| DTW | 0.75% | 2% | 3.5% |
+| TSFresh | 1.5% | 4% | 2.5% |
+| Features of Table 1 (ECG features) | 0.75% | 4.5% | **12.5%** |
+
+
 

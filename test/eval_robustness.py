@@ -19,17 +19,20 @@ from src.models.WillBeNamed import Generator
 from src.models.Transformer import MPEncoderDecoder as ED_Generator
 from src.utils_matrix_profile import MP_compute_recursive
 from main import normalize, plot_res, save_args
-from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader
+from src.utils import pearson_correlation, mp_utility_metrics_motif, mp_utility_metrics_discord
+from reidentify import reidentification_attack
+from loader import ptbxl_loader, arrhythmia_loader, ltdb_loader, tdbrain_loader, ptb_diagnostic_loader, ptb_diagnostic_records_per_patient, eegmmidb_loader, eegmmidb_subjects
 
-DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia": arrhythmia_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader}
-LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia": np.arange(48), "arrhythmia_xl": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200)}
-SOURCE_HZ = {"ptbxl": 100, "arrhythmia": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500}
+DATA_LOADERS = {"ptbxl": ptbxl_loader, "arrhythmia": arrhythmia_loader, "arrhythmia_xl": arrhythmia_loader, "ltdb": ltdb_loader, "tdbrain": tdbrain_loader, "ptb_diagnostic": ptb_diagnostic_loader, "eegmmidb": eegmmidb_loader}
+LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia": np.arange(48), "arrhythmia_xl": np.arange(48), "ltdb": np.arange(7), "tdbrain": np.arange(1000,1200), "ptb_diagnostic": np.arange(len(ptb_diagnostic_records_per_patient())), "eegmmidb": np.arange(len(eegmmidb_subjects()))}
+# ptb_diagnostic is recorded at 1000 Hz but, as in test/eval.py, resampled to 100 Hz
+SOURCE_HZ = {"ptbxl": 100, "arrhythmia": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500, "ptb_diagnostic": 100, "eegmmidb": 160}
 SESSION_EEG = "EC"
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='===== GAN to generate synthetic time series with the given Matrix Profile =====')
-    parser.add_argument("-n_ts", type=int, required=True, help="Length of the dataset")
+    parser.add_argument("-n_ts", type=int, required=True, help="Number of people evaluated (the first n_ts of the dataset)")
     parser.add_argument("-n", type=int, required=True, help="Length of the considered time series")
     parser.add_argument("-m", type=int, required=True, help="Subsequence length for the Matrix Profile")
     parser.add_argument("-r", "--random_seed", type=int, default=None, help="Random seed used to generate the time series (default: None)")
@@ -48,7 +51,10 @@ if __name__ == "__main__":
     parser.add_argument("-resample_hz", type=int, default=None, metavar="HZ",help="Resample signals to this rate (Hz) before processing")
     parser.add_argument("--rob", type=str, default="mpi", help="The perturbation list")
     parser.add_argument("--eps", type=float, default=100.0, help="The global epsilon (privacy budget)")
-    
+    parser.add_argument("--eps_mpi", type=float, default=None, help="Epsilon for the MPI perturbation (defaults to --eps)")
+    parser.add_argument("--eps_mpd", type=float, default=None, help="Epsilon for the MPD perturbation (defaults to --eps)")
+    parser.add_argument("--k", type=int, default=3, help="Number of peaks for the @k utility metrics")
+
     args = parser.parse_args()
 
     dataset = args.dataset
@@ -61,10 +67,14 @@ if __name__ == "__main__":
 
     os.environ["NUMBA_THREADING_LAYER"] = "omp"
     frequency = SOURCE_HZ[dataset] if resample_hz is None else resample_hz
+    people = LIST_PEOPLE[dataset][:args.n_ts]  # first n_ts people
+    print(f"Using {len(people)} people of {dataset}")
     if dataset == "tdbrain":
-        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency, session=SESSION_EEG)
+        all_ts = DATA_LOADERS[dataset](people, dest_hz=frequency, session=SESSION_EEG)
+    elif dataset == "ptb_diagnostic":
+        all_ts = DATA_LOADERS[dataset](people, dest_hz=frequency, one_per_patient=True)
     else:
-        all_ts = DATA_LOADERS[dataset](LIST_PEOPLE[dataset], dest_hz=frequency)
+        all_ts = DATA_LOADERS[dataset](people, dest_hz=frequency)
 
     L = args.n - m + 1
     window_len = 100
@@ -94,14 +104,23 @@ if __name__ == "__main__":
     else:
         G = ED_Generator(n=n, m=m, d_model=m, nhead=5)
     
-    # model_save_path = f"src/results/baseline/2026-03-04_10:10:37/"
-    # model_save_path = f"src/results/baseline/2026-04-20_13:56:19/"
     if args.category == "ecg":
         model_save_path = f"src/results/baseline/ptbxl/"
     else:
-        model_save_path = f"src/results/baseline/eeg/"
+        model_save_path = f"src/results/baseline/eeg_160hz/"
 
-    result_save_path = os.path.join(model_save_path, args.dataset, args.rob, str(args.eps))
+    eps_mpi = args.eps if args.eps_mpi is None else args.eps_mpi
+    eps_mpd = args.eps if args.eps_mpd is None else args.eps_mpd
+    # the folder only names the budget(s) of the perturbed component(s)
+    if args.rob == "mpi":
+        eps_dir = f"mpi{eps_mpi}"
+    elif args.rob == "mpd":
+        eps_dir = f"mpd{eps_mpd}"
+    elif args.eps_mpi is None and args.eps_mpd is None:
+        eps_dir = str(args.eps)
+    else:
+        eps_dir = f"mpi{eps_mpi}_mpd{eps_mpd}"
+    result_save_path = os.path.join(model_save_path, args.dataset, args.rob, eps_dir)
     os.makedirs(result_save_path, exist_ok=True)
     save_args(args, output_dir=result_save_path)
     
@@ -113,12 +132,21 @@ if __name__ == "__main__":
     # 4. Generate samples
     G.eval()
 
-    if args.dataset in ("arrhythmia", "arrhythmia_xl"):
-        indices_ts = [500, 1000, 1500, 2000,2500]
-    elif args.dataset in ("ptbxl", "t-drive"):
+    if args.dataset == "arrhythmia":
+        indices_ts = [0,1000,1500, 2000, 2500]
+    elif args.dataset in ("ptbxl", "t-drive", "ptb_diagnostic"):
         indices_ts = [500]
-    else:
+    elif args.dataset in ("tdbrain", "eegmmidb"):
+        indices_ts = [500]
+    elif args.dataset == "kit":
         indices_ts = [0]
+    elif args.dataset == "ltdb":
+        indices_ts = [3029500,4160500,1416000,3648500,4532500,
+                    132000,4300000,2584000,4846000,3612000, 
+                    888000,2338000,4260500,3188000,3774500,
+                    830000,1854000,895000,1776500,3270000,
+                    1828500,591500,399000,3201000,3220500,
+                    3958000,3527000,493000,4611000,1494500]
     
     print(f"Indices : {indices_ts}")
 
@@ -141,13 +169,16 @@ if __name__ == "__main__":
                 embedding=args.enable_mp_embedding,
                 fill_value=args.fill_value,
                 perturb=args.rob,
-                epsilon=args.eps
+                epsilon=args.eps,
+                epsilon_mpi=args.eps_mpi,
+                epsilon_mpd=args.eps_mpd,
+                return_mp=True
             )
             for i in range(len(y_test_full))
         ]
-    _lines, distance_utility_list = zip(*_results)
+    _lines, distance_utility_list, mp_real_list, mp_perturbed_list = zip(*_results)
     X_test_full = np.stack(_lines)
-    
+
     print("Dataset loaded")
             
     test_tensor = torch.stack([torch.tensor(X_test_full[i], dtype=torch.float32) 
@@ -163,7 +194,39 @@ if __name__ == "__main__":
     fake_data = normalize(fake_data)
     test_file_names = [f"{args.category}_"+str(i) for i in range(len(X_test_full))]
     # Plot results
-    plot_res(result_save_path, test_labels, fake_data, distance_utility_list, test_file_names, args.m, args.znorm_mp, plot=args.plot)
+    plot_res(result_save_path, test_labels, fake_data, mp_real_list, mp_perturbed_list, distance_utility_list, test_file_names, args.m, args.znorm_mp, plot=args.plot)
+
+    # Raw results of this run, appended to the previous runs in eval_metrics.json; the means are
+    # left to the plotting (src/plot/plot_paper.py). Per-sample metrics are stored as
+    # {metric: [[run 1 samples], [run 2 samples], ...]}, the re-identification rate (one value
+    # per run) as {"reidentification_rate": [run 1, run 2, ...]}.
+    per_sample = {}
+    for i in range(len(y_test_full)):
+        mp_orig, mp_pert = np.asarray(mp_real_list[i]), np.asarray(mp_perturbed_list[i])
+        P, I = mp_orig[:, 0], mp_orig[:, 1].astype(int)
+        P_rel, I_rel = mp_pert[:, 0], mp_pert[:, 1].astype(int)
+        sample = {"reconstruction_pcc": pearson_correlation(np.asarray(y_test_full[i], dtype=np.float64),
+                                                            normalize(fake_data[i].numpy().squeeze().astype(np.float64))),
+                  **distance_utility_list[i],
+                  **mp_utility_metrics_motif(P, I, P_rel, I_rel, args.m, k=args.k),
+                  **mp_utility_metrics_discord(P, P_rel, args.m, k=args.k)}
+        for name, v in sample.items():
+            per_sample.setdefault(name, []).append(float(v))
+    rir = float(reidentification_attack(result_save_path, ipopt=False, dataset=args.dataset, category=args.category,
+                                        use_mp=False, classifier="svm", use_feature=True,
+                                        use_original=False, distance=False))
+    print(f"Re-identification rate: {rir:.4f}")
+
+    metrics_file = os.path.join(result_save_path, "eval_metrics.json")
+    metrics_history = {}
+    if os.path.exists(metrics_file):
+        with open(metrics_file) as f:
+            metrics_history = json.load(f)
+    for name, values in per_sample.items():
+        metrics_history[name] = metrics_history.get(name, []) + [values]
+    metrics_history["reidentification_rate"] = metrics_history.get("reidentification_rate", []) + [rir]
+    with open(metrics_file, "w") as f:
+        json.dump(metrics_history, f, indent=4)
 
     # Plot the first feature (D=1 assumed) or slice index 0
     plt.figure(figsize=(5, 12))
