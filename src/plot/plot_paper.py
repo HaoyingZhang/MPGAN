@@ -4,6 +4,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
+from matplotlib.ticker import PercentFormatter, MaxNLocator
 import json, sys, os
 from collections import Counter
 from scipy.spatial.distance import euclidean
@@ -15,6 +16,14 @@ from eval import compute_loss_from_folder, compute_utility_loss_from_folder
 from reidentify import reidentification_attack
 from features_extraction import extract_ecg_features, extract_eeg_features, extract_eeg_features_bis
 import argparse
+
+# Times-like serif text and math (STIX), as in most papers; fonts embedded as TrueType in pdf/ps outputs
+matplotlib.rcParams.update({"font.family": "serif",
+                            "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "STIXGeneral", "DejaVu Serif"],
+                            "mathtext.fontset": "stix", "pdf.fonttype": 42, "ps.fonttype": 42})
+
+# RIR of each dataset, used for the 5% threshold of the RIR gain plots
+RIR = {"ptbxl": 0.125, "ptb_diagnostic": 0.09, "arrhythmia": 0.238, "ltdb": 0.492}
 
 
 def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_original: np.ndarray, ts_intermediate: np.ndarray|None, m: int, znorm: bool = True):
@@ -67,29 +76,37 @@ def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_origin
     pcc_ts_red = pearson_correlation(np.array(ts_ipopt), np.array(ts_original))
     pcc_ts_blue = pearson_correlation(np.array(ts_deepmp), np.array(ts_original))
 
-    # --- layout ---
-    fig = plt.figure(figsize=(14, 8))
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.3)
+    # --- style ---
+    fs_title, fs_legend, fs_tick = 18, 18, 18
 
-    ax_ts  = fig.add_subplot(gs[0, :])   # full-width top row
+    # --- layout ---
+    fig = plt.figure(figsize=(13, 9))
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.55, wspace=0.12)
+
+    # top row narrower than the figure, centred
+    gs_top = gs[0, :].subgridspec(1, 3, width_ratios=[1, 8, 1])
+    ax_ts  = fig.add_subplot(gs_top[0, 1])
     ax_mpd = fig.add_subplot(gs[1, 0])   # bottom-left  : MP distance
     ax_mpi = fig.add_subplot(gs[1, 1])   # bottom-right : MP index
 
+    # legends below each axis so that they never hide the curves
+    legend_kw = dict(fontsize=fs_legend, loc="upper center", bbox_to_anchor=(0.5, -0.1), frameon=False)
+
     # --- top: time series ---
-    ax_ts.plot(ts_deepmp, color="blue",  label=f"DeepMP Solution (PCC = {pcc_ts_blue:.2f})", linewidth=1.2)
+    ax_ts.plot(ts_deepmp, color="blue",  label=f"DeepMP (PCC = {pcc_ts_blue:.2f})", linewidth=1.2)
     if ts_intermediate is not None:
         ax_ts.plot(ts_intermediate, color="red", linestyle="dotted", label="IPOPT Intermediate Solution", linewidth=1.0)
-    ax_ts.plot(ts_ipopt,  color="red",   label=f"DeepMP+IPOPT Solution (PCC = {pcc_ts_red:.2f})", linewidth=1.2)
+    ax_ts.plot(ts_ipopt,  color="red",   label=f"DeepMP+IPOPT (PCC = {pcc_ts_red:.2f})", linewidth=1.2)
     ax_ts.plot(ts_original, color="green",  label="Ground Truth", linewidth=1.2)
-    ax_ts.set_title("Time Series", fontsize=12)
-    ax_ts.legend(fontsize=9)
+    ax_ts.set_title("Time Series", fontsize=fs_title)
+    ax_ts.legend(ncol=2 if ts_intermediate is not None else 3, **legend_kw)
 
     # --- bottom-left: MP distance ---
     ax_mpd.plot(mp_blue[:, 0], color="blue", label=f"MPD DeepMP (RMSE = {rmse_mpd_blue:.2f})", linewidth=1.2)
     ax_mpd.plot(mp_red[:, 0],  color="red",  label=f"MPD DeepMP+IPOPT (RMSE = {rmse_mpd_red:.2f})", linewidth=1.2)
     ax_mpd.plot(mp_gray[:, 0], color="green", label="MPD Ground Truth", linewidth=1.2)
-    ax_mpd.set_title("Matrix Profile Distance (MPD)", fontsize=12)
-    ax_mpd.legend(fontsize=9)
+    ax_mpd.set_title("Matrix Profile Distance (MPD)", fontsize=fs_title)
+    ax_mpd.legend(ncol=1, **legend_kw)
 
     # --- bottom-right: MP index ---
     x_blue = np.arange(len(mp_blue))
@@ -101,8 +118,11 @@ def plot_three_ts_with_mp(ts_deepmp: np.ndarray, ts_ipopt: np.ndarray, ts_origin
     ax_mpi.scatter(x_gray, mp_gray[:, 1], color="green", label="MPI Ground Truth", s=4
                    , marker="."
                    )
-    ax_mpi.set_title("Matrix Profile Index (MPI)", fontsize=12)
-    ax_mpi.legend(fontsize=9)
+    ax_mpi.set_title("Matrix Profile Index (MPI)", fontsize=fs_title)
+    ax_mpi.legend(ncol=1, markerscale=3, **legend_kw)
+
+    for ax in (ax_ts, ax_mpd, ax_mpi):
+        ax.tick_params(labelsize=fs_tick)
 
     return fig
 
@@ -318,7 +338,7 @@ def plot_feature_relative_error_boxplot(
 
         tick_pos = [i * group_w + (n_datasets - 1) * box_w / 2 for i in range(n_chunk)]
         ax.set_xticks(tick_pos)
-        ax.set_xticklabels(chunk, rotation=45, ha="right", fontsize=17)
+        ax.set_xticklabels(chunk, rotation=45, ha="right", fontsize=18)
         ax.set_ylabel("Relative error", fontsize=20)
         ax.set_yscale("log")
         ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
@@ -350,9 +370,9 @@ if __name__ == "__main__":
 
     if args.exp_name == "plot_ipopt":
         if args.category == "ecg":
-            deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_115/results.json"
-            ipopt_only_path = "src/results/ipopt/ptbxl_with_only_ipopt_sol/ecg_115/results.json"
-            ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_115/results.json"
+            deepmp_sol_path = "src/results/baseline/ptbxl/ptbxl/ecg_39/results.json"
+            ipopt_only_path = "src/results/ipopt/ptbxl_with_only_ipopt_sol/ecg_39/results.json"
+            ipopt_sol_path = "src/results/ipopt/ptbxl/ecg_39/results.json"
         else:
             # deepmp_sol_path = "src/results/baseline/eeg/tdbrain/eeg_70/results.json"
             # ipopt_sol_path = "src/results/ipopt/eeg/eeg_70/results.json"
@@ -376,10 +396,13 @@ if __name__ == "__main__":
         
         if args.category == "ecg":
             fig = plot_three_ts_with_mp(ts_deepmp, ts_ipopt, ts_original, None, m=100, znorm=True)
-            fig.savefig("paper_figures/compare_ipopt_ecg.jpg")
+            save_path = "paper_figures/compare_ipopt_ecg.jpg"
         else:
             fig = plot_three_ts_with_mp(ts_deepmp, ts_smooth, ts_original, ts_ipopt, m=100, znorm=True)
-            fig.savefig("paper_figures/compare_ipopt_eeg.jpg")
+            save_path = "paper_figures/compare_ipopt_eeg.jpg"
+        
+        print(f"Figure saved in {save_path}")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
     
     if args.exp_name == "conformal_prediction":
         # Conformal prediction
@@ -398,9 +421,10 @@ if __name__ == "__main__":
         # [[run 1 samples], ...] and the re-identification rate as [run 1, ...].
         # Each run is first averaged over its samples, then mean and standard error over runs.
         eval_types = args.rob
-        fs_legend = 16
-        fs_text = 16
-        fs_label = 12
+        # same sizes as the compare_ipopt figures
+        fs_legend = 18
+        fs_text = 18
+        fs_label = 15  # tick labels
         vec_size = 401
         datasets = args.datasets
         root_path = "src/results/baseline/ptbxl/" if args.category == "ecg" else "src/results/baseline/eeg_160hz/"
@@ -417,12 +441,17 @@ if __name__ == "__main__":
             epsilon = [100.0,1000.0,10000.0,100000.0,500000.0,800000.0, 1000000.0,100000000.0]
 
             # older runs (before eval_metrics.json) were cached per run as {dataset: {eps: {"pcc", "acc",
-            # "utility_loss"}}}, utility_loss being the 1-PCC of the MPD for mpd and the EMD otherwise
-            legacy_file = os.path.join(root_path, f"eval_robustness_{eval_type}_results.json")
+            # "utility_loss"}}}, one file per utility metric: the 1-PCC of the MPD for mpd, the EMD
+            # otherwise, and the RMSE of mpi in a separate file
+            legacy_files = {"pcc" if eval_type == "mpd" else "emd": f"eval_robustness_{eval_type}_results.json"}
+            if eval_type == "mpi":
+                legacy_files["rmse"] = f"eval_robustness_{eval_type}_results_rmse.json"
             legacy = {}
-            if os.path.exists(legacy_file):
-                with open(legacy_file) as f:
-                    legacy = json.load(f)
+            for utility_name, file_name in legacy_files.items():
+                legacy_file = os.path.join(root_path, file_name)
+                if os.path.exists(legacy_file):
+                    with open(legacy_file) as f:
+                        legacy[utility_name] = json.load(f)
 
             # raw results, per dataset and eps
             results = {}
@@ -435,20 +464,36 @@ if __name__ == "__main__":
                     if os.path.exists(metrics_file):
                         with open(metrics_file) as f:
                             res = json.load(f)
-                    elif str(eps) in legacy.get(dataset, {}):
-                        old = legacy[dataset][str(eps)]
-                        res = {"reconstruction_pcc": old["pcc"], "reidentification_rate": old["acc"],
-                               "pcc" if eval_type == "mpd" else "emd": old["utility_loss"]}
-                        print(f"[{dataset}] {eval_type} eps={eps}: using the older results of {legacy_file}")
                     else:
-                        print(f"[{dataset}] missing {metrics_file}, run exe_robustness.sh first")
+                        # each legacy file comes from its own runs: the reconstruction PCC and the
+                        # re-identification rate are kept per utility metric, {utility metric: runs}
+                        for utility_name, old_results in legacy.items():
+                            old = old_results.get(dataset, {}).get(str(eps))
+                            if old is None:
+                                continue
+                            res.setdefault("reconstruction_pcc", {})[utility_name] = old["pcc"]
+                            res.setdefault("reidentification_rate", {})[utility_name] = old["acc"]
+                            res[utility_name] = old["utility_loss"]
+                            print(f"[{dataset}] {eval_type} eps={eps}: using the older results of "
+                                  f"{legacy_files[utility_name]}")
+                        # the RMSE file comes from other runs: plot the same RIR as with the EMD
+                        rir_runs = res.get("reidentification_rate", {})
+                        if "emd" in rir_runs and "rmse" in rir_runs:
+                            rir_runs["rmse"] = rir_runs["emd"]
+                        if not res:
+                            print(f"[{dataset}] missing {metrics_file}, run exe_robustness.sh first")
                     results[dataset].append(res)
 
-            def metric_stats(name):
-                """[mean per eps] and [standard error per eps] of one metric, one list per dataset."""
+            def metric_stats(name, utility_name=None):
+                """[mean per eps] and [standard error per eps] of one metric, one list per dataset.
+                utility_name picks the runs of a privacy metric stored per utility metric (legacy results)."""
+                def runs_of(res):
+                    runs = res.get(name, [])
+                    return runs.get(utility_name, []) if isinstance(runs, dict) else runs
+
                 means, stds = [], []
                 for dataset in datasets:
-                    stats_eps = [run_stats(res.get(name, [])) for res in results[dataset]]
+                    stats_eps = [run_stats(runs_of(res)) for res in results[dataset]]
                     means.append([s[0] for s in stats_eps])
                     stds.append([s[1] for s in stats_eps])
                 return means, stds
@@ -464,51 +509,75 @@ if __name__ == "__main__":
                 return f"${coeff}\\times10^{{{exp}}}$"
 
             eps_labels = [fmt_eps(e/vec_size) for e in epsilon]
+            eps_xlabels = {"mpd": "$\\epsilon_D$", "mpi": "$\\epsilon_I$"}
 
-            from matplotlib.ticker import PercentFormatter
-            matplotlib.rcParams.update({"font.size": 13})
+            matplotlib.rcParams.update({"font.size": fs_text})
             x = np.arange(len(epsilon))
-            colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+            # same style as test/eval_utility.py: utility in blue on the left axis,
+            # privacy metric in orange dotted on the right axis
+            c_util, c_priv = "tab:blue", "tab:orange"
+            # datasets told apart by their marker
+            util_markers = ["o", "^", "v", "D"]
+            priv_markers = ["s", "P", "X", "*"]
             # one folder per dataset (or per combination when several are plotted together)
             out_dir = os.path.join("paper_figures/robustness", "_".join(datasets))
             os.makedirs(out_dir, exist_ok=True)
 
-            def plot_figure(left_name, left_label, utility_name, out):
-                """left_name on the left axis (solid), utility_name on the right axis (dashed), one color per dataset."""
-                left_vals, left_stds = metric_stats(left_name)
+            # reference eps of the gain plots: the privacy metric is divided by its value at this eps
+            ref_eps_idx = epsilon.index(100000000.0)
+
+            def plot_figure(scale, priv_name, priv_label, utility_name, out, gain=False):
+                priv_vals, priv_stds = metric_stats(priv_name, utility_name)
                 ul_vals, ul_stds = metric_stats(utility_name)
+                if gain:
+                    priv_stds = [np.array(s) * scale/ v[ref_eps_idx] for v, s in zip(priv_vals, priv_stds)]
+                    priv_vals = [np.array(v) * scale / v[ref_eps_idx] for v in priv_vals]
+                util_label = utility_labels.get(utility_name, utility_name)
                 fig, ax = plt.subplots(figsize=(5.5, 4))
                 axb = ax.twinx()
                 for i, dataset in enumerate(datasets):
-                    c = colors[i % len(colors)]
-                    ax.errorbar(x, left_vals[i], yerr=left_stds[i],
-                                marker="o", color=c, linestyle="-", label=dataset,
-                                capsize=4, capthick=1.2, elinewidth=1.2)
-                    axb.errorbar(x, ul_vals[i], yerr=ul_stds[i],
-                                 marker="s", color=c, linestyle="--", alpha=0.5,
-                                 capsize=4, capthick=1.2, elinewidth=1.2)
+                    prefix = f"{dataset} " if len(datasets) > 1 else ""
+                    ax.errorbar(x, ul_vals[i], yerr=ul_stds[i],
+                                marker=util_markers[i % len(util_markers)], color=c_util, linestyle="-",
+                                label=prefix + util_label, capsize=4, capthick=1.2, elinewidth=1.2)
+                    axb.errorbar(x, priv_vals[i], yerr=priv_stds[i],
+                                 marker=priv_markers[i % len(priv_markers)], color=c_priv, linestyle=":",
+                                 label=prefix + priv_label, capsize=4, capthick=1.2, elinewidth=1.2)
 
-                if left_name == "reidentification_rate":
-                    ax.axhline(y=rir_limit, color="gray", linestyle=":", linewidth=1.2)
-                    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+                if priv_name == "reidentification_rate":
+                    # 5% RIR
+                    if not gain or any(dataset in RIR for dataset in datasets):
+                        axb.axhline(y=rir_limit, color="gray", linestyle=":", linewidth=1.2)
+                    axb.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
                 else:
-                    ax.set_ylim(0, 0.6)
+                    axb.set_ylim(0, 0.6)
                 ax.set_xticks(x)
                 ax.set_xticklabels(eps_labels, fontsize=fs_label, rotation=45, ha="right")
-                ax.set_xlabel("Epsilon", fontsize=fs_text)
-                ax.set_ylabel(left_label, fontsize=fs_text)
-                axb.set_ylabel(utility_labels.get(utility_name, utility_name), fontsize=fs_text)
-                ax.legend(loc="best", fontsize=fs_legend, framealpha=0.7)
+                ax.set_xlabel(eps_xlabels.get(eval_type, "Epsilon"), fontsize=fs_text)
+                ax.set_ylabel(util_label, fontsize=fs_text, color=c_util)
+                axb.set_ylabel(priv_label, fontsize=fs_text, color=c_priv)
+                ax.tick_params(axis="y", colors=c_util, labelsize=fs_label)
+                axb.tick_params(axis="y", colors=c_priv, labelsize=fs_label)
+                # denser y ticks on both axes (the x axis has one tick per eps already)
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
+                axb.yaxis.set_major_locator(MaxNLocator(nbins=8))
+                lines = ax.get_legend_handles_labels()
+                lines_b = axb.get_legend_handles_labels()
                 fig.tight_layout()
-                fig.savefig(out, dpi=150, bbox_inches="tight")
+                # legend below the figure (under the x label) so that it never hides the curves
+                # fig.legend(lines[0] + lines_b[0], lines[1] + lines_b[1], loc="upper center",
+                #            bbox_to_anchor=(0.5, 0.0), ncol=2, fontsize=fs_legend, frameon=False)
+                fig.savefig(out, dpi=300, bbox_inches="tight")
                 plt.close(fig)
                 print(f"Saved {out}")
 
             for utility_name in utility_names:
                 utility_tag = utility_name.replace("@", "_at")
-                plot_figure("reidentification_rate", "RIR", utility_name,
-                            os.path.join(out_dir, f"{eval_type}_reidentification_{utility_tag}.png"))
-                plot_figure("reconstruction_pcc", "Mean PCC", utility_name,
+                # plot_figure("reidentification_rate", "RIR", utility_name,
+                #             os.path.join(out_dir, f"{eval_type}_reidentification_{utility_tag}.png"))
+                plot_figure(RIR[dataset], "reidentification_rate", "RIR", utility_name,
+                            os.path.join(out_dir, f"{eval_type}_reidentification_{utility_tag}.png"), gain=True)
+                plot_figure(1, "reconstruction_pcc", "Mean PCC", utility_name,
                             os.path.join(out_dir, f"{eval_type}_reconstruction_{utility_tag}.png"))
 
 
@@ -516,9 +585,9 @@ if __name__ == "__main__":
         ## Plot the feature preservation for ECG datasets
         if args.category == "ecg":
             dataset_paths = {
-                # "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
-                # "ptbxl":      "src/results/ipopt/ptbxl/",
-                # "ltdb": "src/results/ipopt/ltdb",
+                "arrhythmia": "src/results/ipopt/arrhythmia_xl/",
+                "ptbxl":      "src/results/ipopt/ptbxl/",
+                "ltdb": "src/results/ipopt/ltdb",
                 "ptb_diagnostic": "src/results/ipopt/ptb_diagnostic"
             }
             fs = 100
@@ -528,4 +597,4 @@ if __name__ == "__main__":
                 "tdbrain": "src/results/ipopt/eeg_160hz/"
             }
             fs = 160
-        plot_feature_relative_error_boxplot(dataset_paths, category=args.category, fs=fs, out=f"paper_figures/feature_relative_error_boxplot_{args.category}.png", features_per_row=34)
+        plot_feature_relative_error_boxplot(dataset_paths, category=args.category, fs=fs, out=f"paper_figures/feature_relative_error_boxplot_{args.category}.png", features_per_row=17)

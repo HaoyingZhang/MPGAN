@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, TensorDataset, random_split, Subset
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
-import sys, os, argparse, glob, json
+import sys, os, argparse, glob, json, subprocess
 import stumpy
 from scipy import stats
 import wfdb
@@ -28,6 +28,9 @@ LIST_PEOPLE =  {"ptbxl": np.arange(21000,21200), "arrhythmia": np.arange(48), "a
 # ptb_diagnostic is recorded at 1000 Hz but, as in test/eval.py, resampled to 100 Hz
 SOURCE_HZ = {"ptbxl": 100, "arrhythmia": 100, "arrhythmia_xl": 100, "ltdb": 100, "tdbrain": 500, "ptb_diagnostic": 100, "eegmmidb": 160}
 SESSION_EEG = "EC"
+# IPOPT solver (run as a subprocess: attack_matrix_profile has its own top-level `src` package)
+IPOPT_ROOT = os.path.join(root_path, "attack_matrix_profile")
+IPOPT_SCRIPT = os.path.join("src", "rmpi", "exhaustive_rmpi_noisy_mp.py")
 
 
 if __name__ == "__main__":
@@ -54,6 +57,9 @@ if __name__ == "__main__":
     parser.add_argument("--eps_mpi", type=float, default=None, help="Epsilon for the MPI perturbation (defaults to --eps)")
     parser.add_argument("--eps_mpd", type=float, default=None, help="Epsilon for the MPD perturbation (defaults to --eps)")
     parser.add_argument("--k", type=int, default=3, help="Number of peaks for the @k utility metrics")
+    parser.add_argument("--ipopt", action="store_true", help="Also reconstruct with IPOPT from the perturbed MP (warm-started from the generated data) and re-identify the reconstructions")
+    parser.add_argument("--ipopt_time_limit", type=float, default=3600.0, help="IPOPT time limit per time series in seconds (default: 3600)")
+    parser.add_argument("--ipopt_parallel", type=int, default=min(12, os.cpu_count()), help="Number of time series solved in parallel by IPOPT (default: min(12, #cpus))")
 
     args = parser.parse_args()
 
@@ -217,6 +223,22 @@ if __name__ == "__main__":
                                         use_original=False, distance=False))
     print(f"Re-identification rate: {rir:.4f}")
 
+    if args.ipopt:
+        # The solver only sees "mp_perturbed" (constraint) and "fake_data" (warm start) of each
+        # results.json written by plot_res, and stores its reconstruction under "reconstruct"
+        ipopt_cmd = [sys.executable, IPOPT_SCRIPT, "-n", str(n), "-m", str(m), "-c", "mpgan", "-g",
+                     "-l", str(args.ipopt_time_limit), "-parallel", str(args.ipopt_parallel),
+                     "--folders", os.path.abspath(result_save_path), "--mpgan_category", args.category]
+        if args.znorm_mp:
+            ipopt_cmd.append("-z")
+        if args.random_seed is not None:
+            ipopt_cmd += ["-r", str(args.random_seed)]
+        subprocess.run(ipopt_cmd, cwd=IPOPT_ROOT, check=True)
+        rir_ipopt = float(reidentification_attack(result_save_path, ipopt=True, dataset=args.dataset, category=args.category,
+                                                  use_mp=False, classifier="svm", use_feature=True,
+                                                  use_original=False, distance=False, ts_key="reconstruct"))
+        print(f"Re-identification rate (IPOPT): {rir_ipopt:.4f}")
+
     metrics_file = os.path.join(result_save_path, "eval_metrics.json")
     metrics_history = {}
     if os.path.exists(metrics_file):
@@ -225,6 +247,8 @@ if __name__ == "__main__":
     for name, values in per_sample.items():
         metrics_history[name] = metrics_history.get(name, []) + [values]
     metrics_history["reidentification_rate"] = metrics_history.get("reidentification_rate", []) + [rir]
+    if args.ipopt:
+        metrics_history["reidentification_rate_ipopt"] = metrics_history.get("reidentification_rate_ipopt", []) + [rir_ipopt]
     with open(metrics_file, "w") as f:
         json.dump(metrics_history, f, indent=4)
 

@@ -9,8 +9,6 @@ from scipy.optimize import linear_sum_assignment
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))  # Add root directory to path
 
-from features_extraction import ts_entropy
-
 def normalize(time_series : np.ndarray) -> np.ndarray:
     return (time_series - time_series.min()) / (time_series.max() - time_series.min())
 

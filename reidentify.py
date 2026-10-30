@@ -495,7 +495,7 @@ def plot_feature_preservation(ref_vecs, test_vecs, subject_ids, feature_keys=Non
         plt.close(fig2)
 
 
-def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using_feature=True, category="ecg", robust_features=False, n_features=None):
+def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using_feature=True, category="ecg", robust_features=False, n_features=None, feature_subset=None):
     """
     Train a re-identification classifier from a list of time-series groups.
 
@@ -518,6 +518,9 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using
 
             KNeighborsClassifier(n_neighbors=1)                        # 1-NN
             SVC(kernel='rbf', C=10, gamma='scale', probability=True)  # RBF-SVM (default)
+
+    feature_subset : list[str], optional
+        Only use these features (default: all the extracted ones).
 
     Returns
     -------
@@ -554,7 +557,7 @@ def train_reidentification_classifier(list_of_ts, fs=150, classifier=None, using
                 elif category == "eeg":
                     feats = eeg_features(ts, robust=robust_features)
                 if feature_keys is None:
-                    feature_keys = list(feats.keys())
+                    feature_keys = list(feats.keys()) if feature_subset is None else list(feature_subset)
                 X_rows.append([feats[k] for k in feature_keys])
             else:
                 X_rows.append(ts)
@@ -599,9 +602,10 @@ def reidentification_attack(base_root, n = 500,
                             use_original=False, distance=False, 
                             metric="dtw", verbose=True, 
                             resample_hz=None, plot=False,
-                            robust_features=False, n_features=None, ts_key=None):
+                            robust_features=False, n_features=None, ts_key=None, feature_subset=None):
     """ts_key: key of results.json holding the attacked series (e.g. "reconstruct");
-    default "solutions"[0] with ipopt, else "fake_data"."""
+    default "solutions"[0] with ipopt, else "fake_data".
+    feature_subset: only use these features (e.g. ["bpm", "arrhythmia"]); default all of them."""
     print(f"Evaluating database {dataset} under base root {base_root}")
 
     # REFERENCE_INDICES = np.concatenate((np.arange(1000, 5000, step=n), np.arange(6000, 8000, step=n))) if dataset == "tdbrain" else [0]
@@ -760,7 +764,7 @@ def reidentification_attack(base_root, n = 500,
         
         pipeline, feature_keys, metadata = train_reidentification_classifier(
             ref_attacker, fs=train_fs, classifier=clf, using_feature=use_feature, category=category,
-            robust_features=robust_features, n_features=n_features,
+            robust_features=robust_features, n_features=n_features, feature_subset=feature_subset,
         )
 
         print(f"Classifier: {clf.__class__.__name__}, trained on {len(ref_attacker)} subjects")
@@ -859,7 +863,7 @@ def reidentification_attack(base_root, n = 500,
                 for seg in ts_person_segs:
                     f = eeg_features(seg, robust=robust_features) if category == "eeg" else extract_ecg_features(seg, fs=fs_dist)
                     if dist_feature_keys is None:
-                        dist_feature_keys = list(f.keys())
+                        dist_feature_keys = list(f.keys()) if feature_subset is None else list(feature_subset)
                     person_vecs.append(np.array([f[k] for k in dist_feature_keys], dtype=np.float64))
                 ref_feat.append(person_vecs)
 

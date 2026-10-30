@@ -139,6 +139,21 @@ Use "arrhythmia" and "ptbxl" as [dataset] for ecg data and "tdbrain" as [dataset
 ```bash
 python3 src/plot/plot_paper.py --exp_name robustness
 ```
+Figure 4: Analytical example
+
+```bash
+python3 test/plot_utility_example.py --results src/results/baseline/ptbxl/ptbxl/both/mpi10000.0_mpd100000.0/ecg_17/results.json     --out paper_figures/utility_example_ptbxl_ecg17_mpi10000.0.png
+```
+
+Figure 5 & 6: Stastical utility and privacy tradeoffs
+```bash
+python3 src/plot/plot_paper.py --exp_name robustness
+```
+
+Figure 7: The results
+```bash
+python3 test/evail_utility.py --combined --ipopt
+```
 
 ## Choice of the re-identification instrument
 We benchmark several re-identification mechanisms: random guessing, distance-based matching (e.g., Dynamic Time Warping), and feature-based classification with generic features extracted with [TSFresh](https://tsfresh.readthedocs.io/en/latest/) and with ECG-specific features present in our paper, each applied to three signal representations: the MP directly, time series reconstructed by DeepMP, and those refined by the solver. 
@@ -156,4 +171,21 @@ With the domain-specific features, the refinement provided by the solver further
 | Features of Table 1 (ECG features) | 0.75% | 4.5% | **12.5%** |
 
 
+
+## Median relative errors of EEG features. 
+
+| Domain | Symbol | TDBRAIN | EEGMMIDB |
+|---|---|---|---|
+| Time | `mean` | 0.12 | 0.070 |
+| Time | `std` | 0.17 | 0.22 |
+| Time | `skewness` | 1.10 | 1.2 |
+| Frequency | `peak_freq` | 0.028 | 0.028 |
+| Frequency | `iaf` | 0.012 | 0.014 |
+| Frequency | `delta_power` | 0.54 | 0.36 |
+| Nonlinear | `alpha_env_mean` | 0.30 | 0.25 |
+| Nonlinear | `ar_3` | 0.65 | 0.76 |
+| Matrix profile | `mp_q10` | 0.010 | 0.0072 |
+| Matrix profile | `mp_q75` | 0.0063 | 0.0038 |
+| Matrix profile | `mp_q90` | 0.0073 | 0.0046 |
+| Matrix profile | `mp_q100` | 0.015 | 0.012 |
 

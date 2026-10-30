@@ -19,13 +19,13 @@
 # conda activate mpgan
 
 python3 test/eval.py \
-    -n_ts 200 \
+    -n_ts 274 \
     -n 500 \
     -m 100 \
     -c eeg \
     -dataset tdbrain \
-    -train_id 0 100 \
-    -test_id 1000 1200 \
+    -train_id 0 10 \
+    -test_id 1000 1274 \
     -e 10 \
     -r 2026 \
     -k 0.60 \
@@ -43,8 +43,10 @@ python3 test/eval.py \
     -znorm \
     -time 10 \
     -fill 100.0 \
+    -test \
+    -channel 0 \
     -p \
-    -test
+    -freq 160 \
 
 
 echo "✅ Job completed successfully!"
